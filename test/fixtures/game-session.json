@@ -1,0 +1,5 @@
+{
+  "sessionToken": "session-jwt-1",
+  "identityToken": "identity-jwt-1",
+  "expiresAt": "2026-08-20T01:00:00Z"
+}

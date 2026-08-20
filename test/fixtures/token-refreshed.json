@@ -1,0 +1,7 @@
+{
+  "access_token": "access-token-2",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "refresh_token": "refresh-token-2",
+  "scope": "openid offline auth:server"
+}

@@ -1,0 +1,7 @@
+{
+  "owner": "11111111-1111-1111-1111-111111111111",
+  "profiles": [
+    { "uuid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "username": "FirstProfile" },
+    { "uuid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "username": "SecondProfile" }
+  ]
+}
