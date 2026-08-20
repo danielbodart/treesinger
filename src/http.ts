@@ -87,3 +87,19 @@ export function loggingFetch(logger: Logger, inner: Fetch): Fetch {
 function delay(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+/** Return the parsed JSON body, or throw an UpstreamError carrying the status. */
+export async function ok(response: Response): Promise<unknown> {
+    if (response.ok) return response.json();
+    const body = await safeJson(response);
+    throw new UpstreamError(response.status, body?.error ?? "unknown", `upstream ${response.status}: ${body?.error ?? response.statusText}`);
+}
+
+/** Parse a JSON body, tolerating a missing/invalid one (returns undefined). */
+export async function safeJson(response: Response): Promise<{ error?: string } | undefined> {
+    try {
+        return (await response.json()) as { error?: string };
+    } catch {
+        return undefined;
+    }
+}

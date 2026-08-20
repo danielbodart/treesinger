@@ -9,6 +9,13 @@ import { FakeHytale } from "./fakeHytale.ts";
 /** Discards output; keeps test runs quiet while still satisfying `Logger`. */
 export const silentLogger: Logger = { log() {}, warn() {}, error() {} };
 
+/** A seed whose cached access token stays valid across a test's clock window. */
+export const validSeed: StoredTokens = {
+    refresh_token: "rt",
+    access_token: "access-token-1",
+    access_expires_at: Date.parse("2026-08-20T02:00:00Z"),
+};
+
 const baseConfig: Config = {
     storePath: "/unused-in-tests",
     skewMs: 5 * 60_000,

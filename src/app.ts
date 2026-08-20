@@ -49,12 +49,19 @@ async function health(deps: AppDeps): Promise<Response> {
     }
 }
 
-/** Read an optional `{ uuid }` from the body; tolerate an empty body. */
+/**
+ * Read an optional `{ uuid }` from the body. An empty/whitespace body means
+ * "use the default profile"; a malformed body is the caller's error (400), not
+ * a broker fault (500).
+ */
 async function profileFromBody(request: Request): Promise<string | undefined> {
-    const text = await request.text();
+    const text = (await request.text()).trim();
     if (!text) return undefined;
-    const body = JSON.parse(text) as { uuid?: string };
-    return body.uuid;
+    try {
+        return (JSON.parse(text) as { uuid?: string } | null)?.uuid;
+    } catch {
+        throw new UpstreamError(400, "bad_request", "body must be JSON with an optional string `uuid`");
+    }
 }
 
 /** Map an upstream failure back to a client status; anything else is a 500. */
@@ -66,11 +73,11 @@ function errorResponse(logger: Logger, error: unknown): Response {
     return json({ error: "internal" }, 500);
 }
 
-function mapStatus(upstream: number): number {
-    if (upstream === 401) return 401;
-    if (upstream === 403) return 403;
-    if (upstream === 404) return 404;
-    return 502; // any other upstream failure is a bad-gateway from the fleet's view
+function mapStatus(status: number): number {
+    // Client errors (our 400 validation) and the auth/entitlement statuses pass
+    // through unchanged; anything else upstream is a bad gateway to the fleet.
+    if (status === 400 || status === 401 || status === 403 || status === 404) return status;
+    return 502;
 }
 
 function json(body: unknown, status: number): Response {

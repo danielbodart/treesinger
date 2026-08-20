@@ -1,16 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { harness } from "./support/harness.ts";
+import { harness, validSeed } from "./support/harness.ts";
 import { ROUTES } from "./support/fakeHytale.ts";
 import profiles from "./fixtures/profiles.json";
 import gameSession from "./fixtures/game-session.json";
 import sessionLimit from "./fixtures/error-session-limit.json";
-
-/** A store whose cached access token is valid all through the tested window. */
-const validSeed = {
-    refresh_token: "rt",
-    access_token: "access-token-1",
-    access_expires_at: Date.parse("2026-08-20T02:00:00Z"),
-};
 
 describe("mint", () => {
     test("profiles → new session → the pair, minted for the first profile by default", async () => {

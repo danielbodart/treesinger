@@ -1,5 +1,5 @@
 import type { Clock } from "./clock.ts";
-import { type Fetch, UpstreamError } from "./http.ts";
+import { type Fetch, ok, UpstreamError } from "./http.ts";
 import type { OAuthClient } from "./oauth.ts";
 import type { Config } from "./config.ts";
 
@@ -115,15 +115,4 @@ export class SessionClient {
 
 function bearer(token: string): Record<string, string> {
     return { authorization: `Bearer ${token}` };
-}
-
-async function ok(response: Response): Promise<unknown> {
-    if (response.ok) return response.json();
-    let code = "unknown";
-    try {
-        code = ((await response.json()) as { error?: string }).error ?? "unknown";
-    } catch {
-        // no JSON body
-    }
-    throw new UpstreamError(response.status, code, `upstream ${response.status}: ${code}`);
 }

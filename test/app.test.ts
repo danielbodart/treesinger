@@ -1,15 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { harness } from "./support/harness.ts";
+import { harness, validSeed } from "./support/harness.ts";
 import { ROUTES } from "./support/fakeHytale.ts";
 import profiles from "./fixtures/profiles.json";
 import gameSession from "./fixtures/game-session.json";
 import sessionLimit from "./fixtures/error-session-limit.json";
-
-const validSeed = {
-    refresh_token: "rt",
-    access_token: "access-token-1",
-    access_expires_at: Date.parse("2026-08-20T02:00:00Z"),
-};
 
 const post = (body?: unknown, headers?: Record<string, string>) =>
     new Request("http://broker/v1/session", {
@@ -37,6 +31,20 @@ describe("POST /v1/session", () => {
 
         const mintCall = fake.calls.find((call) => call.pathname === "/game-session/new")!;
         expect(JSON.parse(mintCall.body)).toEqual({ uuid: "cccccccc-cccc-cccc-cccc-cccccccccccc" });
+    });
+
+    test("a malformed body is a 400, not a 500", async () => {
+        const { c } = harness({ seed: validSeed });
+        const res = await c.app(new Request("http://broker/v1/session", { method: "POST", body: "{uuid:" }));
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: "bad_request" });
+    });
+
+    test("a whitespace body falls back to the default profile", async () => {
+        const { c, fake } = harness({ seed: validSeed, config: { ownerUuid: "x" } });
+        fake.on(ROUTES.newSession, { json: gameSession });
+        const res = await c.app(new Request("http://broker/v1/session", { method: "POST", body: "  " }));
+        expect(res.status).toBe(200);
     });
 
     test("maps a 403 session-limit through to a 403", async () => {

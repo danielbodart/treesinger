@@ -1,5 +1,5 @@
 import type { Clock } from "./clock.ts";
-import { type Fetch, type Logger, UpstreamError } from "./http.ts";
+import { type Fetch, type Logger, ok, safeJson, UpstreamError } from "./http.ts";
 import type { StoredTokens, TokenStore } from "./store.ts";
 import type { Config } from "./config.ts";
 
@@ -162,19 +162,4 @@ function form(url: string, fields: Record<string, string>): Request {
         headers: { "content-type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams(fields).toString(),
     });
-}
-
-/** Return the parsed JSON body, or throw an UpstreamError carrying the status. */
-async function ok(response: Response): Promise<unknown> {
-    if (response.ok) return response.json();
-    const body = await safeJson(response);
-    throw new UpstreamError(response.status, body?.error ?? "unknown", `upstream ${response.status}: ${body?.error ?? response.statusText}`);
-}
-
-async function safeJson(response: Response): Promise<{ error?: string } | undefined> {
-    try {
-        return (await response.json()) as { error?: string };
-    } catch {
-        return undefined;
-    }
 }
