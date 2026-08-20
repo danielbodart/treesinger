@@ -1,0 +1,25 @@
+{
+  "name": "treesinger",
+  "version": "0.0.0",
+  "description": "Central authentication broker for Hytale dedicated servers — one login mints a short-lived session for every server on demand.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "module": "src/main.ts",
+  "bin": {
+    "treesinger": "src/main.ts"
+  },
+  "scripts": {
+    "start": "bun run src/main.ts serve",
+    "login": "bun run src/main.ts login",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "compile": "bun build --compile --target=bun-linux-x64 --outfile treesinger src/main.ts"
+  },
+  "dependencies": {
+    "@bodar/yadic": "npm:@jsr/bodar__yadic"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}

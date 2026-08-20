@@ -1,0 +1,6 @@
+node_modules/
+treesinger
+*.log
+.env
+# Local token store, if a dev points it into the repo.
+*.token.json
