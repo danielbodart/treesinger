@@ -120,6 +120,10 @@ export class OAuthClient {
     private async refresh(): Promise<string> {
         const stored = await this.store.read();
         if (!stored?.refresh_token) throw new UpstreamError(401, "not_logged_in", "no refresh token in store");
+        // Double-check under the single-flight: a refresh that completed between
+        // the caller's cache read and here has already rotated + stored a fresh
+        // token — return it rather than spending the (now-invalidated) old one.
+        if (stored.access_token && this.isFresh(stored)) return stored.access_token;
         this.logger.log("refreshing OAuth access token");
         const response = await this.fetch(form(TOKEN_URL, {
             client_id: CLIENT_ID,
