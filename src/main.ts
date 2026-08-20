@@ -14,8 +14,10 @@ async function main(argv: string[]): Promise<number> {
             return login(c);
         case "serve":
             return serve(c);
+        case "health":
+            return health(c);
         default:
-            console.error("usage: treesinger <login|serve>");
+            console.error("usage: treesinger <login|serve|health>");
             return command ? 1 : 0;
     }
 }
@@ -32,11 +34,28 @@ async function login(c: Container): Promise<number> {
     return 0;
 }
 
-/** Run the broker. `container().app` is the Fetch Bun serves. */
-function serve(c: Container): number {
+/**
+ * Run the broker. `container().app` is the Fetch Bun serves. Returns a promise
+ * that never resolves: the process stays alive serving until it is signalled,
+ * rather than falling through to `process.exit`.
+ */
+function serve(c: Container): Promise<number> {
     const server = Bun.serve({ port: c.config.port, fetch: c.app });
     console.log(`treesinger serving on http://${server.hostname}:${server.port}`);
-    return 0;
+    return new Promise<number>(() => {});
+}
+
+/**
+ * Probe a running broker's `/health` on localhost — the container HEALTHCHECK,
+ * self-contained so the slim runtime image needs no curl/wget.
+ */
+async function health(c: Container): Promise<number> {
+    try {
+        const res = await fetch(`http://127.0.0.1:${c.config.port}/health`);
+        return res.ok ? 0 : 1;
+    } catch {
+        return 1;
+    }
 }
 
 process.exit(await main(Bun.argv));

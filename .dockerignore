@@ -1,0 +1,8 @@
+.git
+node_modules
+test
+treesinger
+*.log
+README.md
+PLAN.md
+.github
