@@ -132,9 +132,27 @@ multiple broker instances against one store would reintroduce the race.
 
 ## Releases
 
-Tagging `vX.Y.Z` builds and publishes both a standalone `bun-linux-x64` binary
-(attached to the GitHub Release) and a Docker image to GHCR (`:X.Y.Z` and
-`:latest`).
+**`trunk` is production.** Every push to it publishes: there are no manual tags
+and no release branches. The version is *derived from the repository*, not stored
+in it — `major.commit-count.ci-run` (see `run.ts`). The major is the one
+deliberate part (in `package.json`); the minor only ever rises and names exactly
+one commit; the patch separates two builds of the same commit. `treesinger
+version` reports what a build calls itself (`development` when run from source).
+
+Each trunk push builds and publishes both a standalone `bun-linux-x64` binary
+(attached to a GitHub Release `v<version>`) and a Docker image to GHCR
+(`ghcr.io/danielbodart/treesinger:<version>` and `:latest`). A pull request builds
+everything but publishes nothing.
+
+```sh
+bun run.ts version   # what this checkout would publish as
+bun run.ts build     # compile dist/treesinger with the version baked in
+bun run.ts image     # build the same image CI publishes, locally
+```
+
+> arm64 is one line away in both the Dockerfile (`--target` already keys off
+> `TARGETARCH`) and the workflow (`platforms:`); the fleet target was x64, so
+> that is all CI builds today.
 
 ## License
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { container, type Container } from "./container.ts";
+import { version } from "./version.ts";
 
 /**
  * Two subcommands of one binary, sharing one container:
@@ -16,8 +17,12 @@ async function main(argv: string[]): Promise<number> {
             return serve(c);
         case "health":
             return health(c);
+        case "version":
+        case "--version":
+            console.log(version);
+            return 0;
         default:
-            console.error("usage: treesinger <login|serve|health>");
+            console.error("usage: treesinger <login|serve|health|version>");
             return command ? 1 : 0;
     }
 }
@@ -41,7 +46,7 @@ async function login(c: Container): Promise<number> {
  */
 function serve(c: Container): Promise<number> {
     const server = Bun.serve({ port: c.config.port, fetch: c.app });
-    console.log(`treesinger serving on http://${server.hostname}:${server.port}`);
+    console.log(`treesinger ${version} serving on http://${server.hostname}:${server.port}`);
     return new Promise<number>(() => {});
 }
 
