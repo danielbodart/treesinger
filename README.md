@@ -1,4 +1,4 @@
-<img src="logo.png" width="600" alt="Logo">
+<img src="logo.png" width="600" alt="Logo" style="display: block; margin: 0 auto;">
 
 # Treesinger
 
