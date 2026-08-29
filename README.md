@@ -1,5 +1,7 @@
 ![Treesinger Logo](logo.png)
 
+<img src="logo.png" width="300" alt="Logo">
+
 # Treesinger
 
 **A central authentication broker for Hytale dedicated servers.** Sign in once;
