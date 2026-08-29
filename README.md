@@ -1,4 +1,4 @@
-<p style="text-align:center"><img src="logo.png" width="600" alt="Logo"></p>
+<p align="center"><img src="logo.png" alt="Logo" width="360"></p>
 
 # Treesinger
 
