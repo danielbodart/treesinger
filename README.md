@@ -1,4 +1,4 @@
-![Treesinger Logo](logo.png)
+![Treesinger Logo](logo.png | width=300)
 
 # Treesinger
 
