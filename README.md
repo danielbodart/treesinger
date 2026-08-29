@@ -1,6 +1,4 @@
-![Treesinger Logo](logo.png)
-
-<img src="logo.png" width="300" alt="Logo">
+<img src="logo.png" width="600" alt="Logo">
 
 # Treesinger
 
