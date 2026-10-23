@@ -317,7 +317,7 @@ LockPersonality=yes
 MemoryDenyWriteExecute=no          # JavaScriptCore JITs
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources
+SystemCallFilter=~@privileged       # not @resources: bun 1.3 sched_setscheduler()s its threads
 CapabilityBoundingSet=
 AmbientCapabilities=
 LoadCredential=bearer-token:<bearerTokenFile>   # only when set
@@ -334,9 +334,11 @@ inside it — hence step 1 of [socket semantics](#socket-semantics)).
 
 Every hardening line is verified in the VM test, not assumed: the broker
 starts, binds, notifies, reads and writes its store, and reaches the network
-stack with all of them, `ProcSubset=pid`, `PrivateUsers=yes` and
-`~@resources` included. `systemd-analyze security` scores it **1.3** ("OK");
-the test asserts ≤ 1.5. What is left exposed is what it needs: `AF_INET` for
+stack with all of them, `ProcSubset=pid` and `PrivateUsers=yes` included.
+`~@resources` is **not** there: on nixos-26.05's bun 1.3.13 the broker died
+of `SIGSYS` at start — it calls `sched_setscheduler` (in `@resources`) on its
+threads; unstable's 1.4.2 does not, so only the 26.05 run caught it.
+`systemd-analyze security` scores it **1.4** ("OK"); the test asserts ≤ 1.5. What is left exposed is what it needs: `AF_INET` for
 Hypixel, `AF_UNIX`, W+X memory for the JIT, `NotifyAccess=all`.
 
 ### Why a fixed user, not `DynamicUser`
@@ -403,7 +405,7 @@ Shipped as `contrib/systemd/`:
 
 The VM test's third machine installs exactly these two unit files (only
 `ExecStart` substituted), runs `systemd-sysusers` on the sysusers file, and
-checks the socket and `/health`: it scores the same 1.3.
+checks the socket and `/health`: it scores the same 1.4.
 
 There is no `treesinger.socket`, by necessity — see
 [socket activation](#socket-activation--investigated-not-possible).
@@ -543,7 +545,7 @@ checks. `nix/test.nix` boots three machines, offline:
   - stop removes the socket, and `treesinger-env` then degrades;
   - against a fake broker, `treesinger-env` passes the session on;
   - `treesinger-login` runs offline as far as the network, writes nothing;
-  - `systemd-analyze security`: 1.3, asserted ≤ 1.5.
+  - `systemd-analyze security`: 1.4, asserted ≤ 1.5.
 - **`custom`** — `user = "gamer"` (an existing normal user),
   `stateDir = "/data/servers/treesinger"` (made by tmpfiles, as a deployer
   would), `port = 8080`, `bearerTokenFile`, extra `environment`:
@@ -557,7 +559,8 @@ checks. `nix/test.nix` boots three machines, offline:
 - **`plain`** — no module: `contrib/systemd`'s unit and sysusers file, see
   [plain systemd](#plain-systemd-no-nix).
 
-Also run against nix-config's nixos-26.05 pin with `--override-input nixpkgs`.
+Also run against nix-config's nixos-26.05 pin with `--override-input nixpkgs`
+(bun 1.3.13): green, after it caught the `@resources` crash above.
 
 ### Docker
 

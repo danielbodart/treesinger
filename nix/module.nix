@@ -51,7 +51,9 @@ let
     # JavaScriptCore compiles JIT code into writable, executable memory.
     MemoryDenyWriteExecute = false;
     SystemCallArchitectures = "native";
-    SystemCallFilter = [ "@system-service" "~@privileged @resources" ];
+    # Not ~@resources: bun 1.3 calls sched_setscheduler on its threads, and
+    # dies of SIGSYS without it (1.4 does not).
+    SystemCallFilter = [ "@system-service" "~@privileged" ];
     CapabilityBoundingSet = "";
     AmbientCapabilities = "";
     PrivateUsers = true;

@@ -57,7 +57,8 @@ LockPersonality=yes
 MemoryDenyWriteExecute=no
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-SystemCallFilter=~@privileged @resources
+# Not ~@resources: bun 1.3 calls sched_setscheduler on its threads.
+SystemCallFilter=~@privileged
 CapabilityBoundingSet=
 AmbientCapabilities=
 
