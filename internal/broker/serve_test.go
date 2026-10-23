@@ -2,6 +2,7 @@ package broker
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"net"
@@ -210,13 +211,13 @@ func TestHealthCommand(t *testing.T) {
 	t.Run("probes the socket when one is configured", func(t *testing.T) {
 		_, socketPath := socketIn(t)
 		h, _ := broker(t, brokerOptions{socketPath: socketPath, seeded: true})
-		assertEqual(t, Health(h.config), 0)
+		assertEqual(t, Health(h.config), nil)
 	})
 
 	t.Run("is unhealthy over the socket when no one has logged in", func(t *testing.T) {
 		_, socketPath := socketIn(t)
 		h, _ := broker(t, brokerOptions{socketPath: socketPath})
-		assertEqual(t, Health(h.config), 1)
+		assertEqual(t, fmt.Sprint(Health(h.config)), "unhealthy: 503 Service Unavailable")
 	})
 
 	t.Run("probes loopback TCP when the listener binds every address", func(t *testing.T) {
@@ -224,13 +225,13 @@ func TestHealthCommand(t *testing.T) {
 		bound, _ := url.Parse(listening.URLs[0])
 		p, _ := strconv.Atoi(bound.Port())
 		h := newHarness(t, options{seed: validSeed(), config: func(c *Config) { c.Port, c.Hostname = port(p), "0.0.0.0" }})
-		assertEqual(t, Health(h.config), 0)
+		assertEqual(t, Health(h.config), nil)
 	})
 
 	t.Run("fails when nothing is listening", func(t *testing.T) {
 		_, socketPath := socketIn(t)
 		h := newHarness(t, options{config: func(c *Config) { c.SocketPath = socketPath }})
-		assertEqual(t, Health(h.config), 1)
+		assertEqual(t, strings.HasPrefix(fmt.Sprint(Health(h.config)), "unreachable: "), true)
 	})
 }
 

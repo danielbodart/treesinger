@@ -48,7 +48,7 @@ func run(args []string) int {
 	case "serve":
 		return failed(broker.Serve(c))
 	default:
-		return broker.Health(*c.Config)
+		return failed(broker.Health(*c.Config))
 	}
 }
 

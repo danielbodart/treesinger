@@ -183,25 +183,25 @@ func Serve(c *Container) error {
 // Health probes a running broker's `/health`: the container HEALTHCHECK,
 // self-contained so the slim runtime image needs no curl/wget. Over the socket
 // when one is configured, else the TCP port on loopback (or the one address it
-// binds). 0 only on a 2xx.
-func Health(config Config) int {
+// binds). Healthy only on a 2xx.
+func Health(config Config) error {
 	client := &http.Client{}
 	if config.SocketPath != "" {
 		client.Transport = unixTransport(config.SocketPath)
 	}
 	target, err := healthURL(config)
 	if err != nil {
-		return 1
+		return err
 	}
 	response, err := client.Get(target)
 	if err != nil {
-		return 1
+		return fmt.Errorf("unreachable: %w", err)
 	}
 	response.Body.Close()
-	if succeeded(response) {
-		return 0
+	if !succeeded(response) {
+		return fmt.Errorf("unhealthy: %s", response.Status)
 	}
-	return 1
+	return nil
 }
 
 func healthURL(config Config) (string, error) {
