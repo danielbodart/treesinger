@@ -60,7 +60,8 @@ treesinger serve
 | `POST /v1/session`   | Mint `{ sessionToken, identityToken, expiresAt }`. Optional body `{ "uuid": "<profile>" }` overrides which profile. What a booting server calls. |
 | `GET /health`        | `200` only when a mint would succeed (refresh token present **and** a valid access token obtainable). Backs compose `service_healthy`. |
 
-Endpoint auth is **off by default** — the boundary is Docker network isolation.
+Endpoint auth is **off by default** — the boundary is Docker network isolation,
+or under systemd the unix socket's group.
 Set `TREESINGER_BEARER_TOKEN` to require `Authorization: Bearer <token>` on
 `/v1/session` (`/health` stays open).
 
@@ -72,7 +73,9 @@ All via environment; every value has a default except the refresh token, which
 | Variable                  | Default                                  | Meaning |
 |---------------------------|------------------------------------------|---------|
 | `TREESINGER_STORE`        | `$XDG_CONFIG_HOME/treesinger/tokens.json`| Token store path (put it on a volume). |
-| `TREESINGER_PORT`         | `8080`                                   | Listen port. |
+| `TREESINGER_SOCKET`       | unset                                    | Listen on this unix socket (mode `0660`, the process's primary group). |
+| `TREESINGER_PORT`         | `8080`, or unset when a socket is set    | Listen on this TCP port. Set it alongside a socket to listen on both. |
+| `TREESINGER_HOST`         | `0.0.0.0`                                | Address the TCP listener binds. |
 | `TREESINGER_SKEW_MS`      | `300000` (5 min)                         | Refresh the access token when less than this much life remains. |
 | `TREESINGER_OWNER_UUID`   | first profile                            | Which profile to mint for when the account has several. |
 | `TREESINGER_BEARER_TOKEN` | unset                                    | Optional shared secret for `/v1/session`. |
@@ -111,12 +114,148 @@ Run `login` once against the same volume before the first `serve`:
 docker run --rm -it -v treesinger-data:/data ghcr.io/danielbodart/treesinger login
 ```
 
+## systemd
+
+Natively, the broker listens on a **unix socket** instead of a network port:
+`/run/treesinger/treesinger.sock`, mode `0660`, group `treesinger`. Being in
+that group is what lets a server mint a session. There is no TCP listener
+unless you set `TREESINGER_PORT` as well. The unit is `Type=notify`, so anything
+ordered `After=treesinger.service` finds the socket already there.
+
+There is no `treesinger.socket` unit: Bun cannot serve on a socket handed
+over by systemd, so the service makes its own, in its runtime directory.
+
+### Without Nix
+
+[`contrib/systemd`](contrib/systemd) has the unit (hardened, see
+`systemd-analyze security treesinger`) and a sysusers file for the
+`treesinger` user and group.
+
+```sh
+sudo install -m 755 treesinger-linux-x64 /usr/local/bin/treesinger   # from Releases
+sudo install -m 644 contrib/systemd/treesinger.sysusers /etc/sysusers.d/treesinger.conf
+sudo install -m 644 contrib/systemd/treesinger.service /etc/systemd/system/
+sudo systemd-sysusers
+sudo systemctl daemon-reload
+sudo systemctl enable --now treesinger
+
+# The one-time login, as the broker's user, into its store. No restart after:
+# the broker reads the store on every request.
+sudo -u treesinger TREESINGER_STORE=/var/lib/treesinger/tokens.json treesinger login
+```
+
+### A Hytale server as a client
+
+Join the group, order after the broker, and mint the session in `ExecStart` —
+an `ExecStartPre` cannot set `ExecStart`'s environment.
+[`contrib/treesinger-env`](contrib/treesinger-env) (needs `curl` and `jq`) does
+that: it asks the broker for a session, puts it in the variables the server
+reads itself (`HYTALE_SERVER_SESSION_TOKEN` / `HYTALE_SERVER_IDENTITY_TOKEN`,
+never argv), then `exec`s the server. If the broker is down or not logged in, it
+warns and starts the server unauthenticated.
+
+```ini
+[Unit]
+Wants=treesinger.service
+After=treesinger.service
+
+[Service]
+SupplementaryGroups=treesinger
+ExecStart=/usr/local/bin/treesinger-env --socket /run/treesinger/treesinger.sock -- \
+    java -jar /opt/hytale/Server/HytaleServer.jar --assets /opt/hytale/Assets.zip
+# A confined server: bind the broker's directory, not the socket, which a
+# restart of the broker replaces. "-" boots it unauthenticated without one.
+BindReadOnlyPaths=-/run/treesinger
+```
+
+A client may use `PrivateUsers=yes`: the `treesinger` group is unmapped in its
+user namespace, but the kernel checks the real group, so it still connects.
+
+### NixOS
+
+```nix
+{
+  inputs.treesinger.url = "github:danielbodart/treesinger";
+
+  outputs = { nixpkgs, treesinger, ... }: {
+    nixosConfigurations.server = nixpkgs.lib.nixosSystem {
+      modules = [
+        treesinger.nixosModules.default
+        { services.treesinger.enable = true; }
+      ];
+    };
+  };
+}
+```
+
+Then, once, `sudo treesinger-login`: it runs the device login as the broker's
+user, in the broker's sandbox and with its environment, so the token lands
+where the broker reads it.
+
+| Option | Default | |
+|---|---|---|
+| `enable` | `false` | |
+| `package` | this flake's | |
+| `user` | `"treesinger"` | Created when left as `treesinger`; any other user must exist and own `stateDir`. |
+| `group` | `"treesinger"` | The socket's group; created when left as `treesinger`. |
+| `stateDir` | `"/var/lib/treesinger"` | Holds `tokens.json`. Any other path must already exist; it is never created or chowned. |
+| `socket` | `"/run/treesinger/treesinger.sock"` | `null` for none. |
+| `port` | `null` | TCP as well. |
+| `host` | `"127.0.0.1"` | TCP bind address. |
+| `openFirewall` | `false` | Open `port`. |
+| `ownerUuid` | `null` | Profile to mint for. |
+| `bearerTokenFile` | `null` | Shared secret for `/v1/session`, read with `LoadCredential`, so never in the store. |
+| `environment` | `{}` | Extra environment, e.g. `TREESINGER_SKEW_MS`. |
+| `environmentFile` | `null` | `EnvironmentFile=`. |
+
+For instance, as an existing user with the state a container left behind
+(its `/data/tokens.json`, here on the host) — stop the container, switch, no
+new login:
+
+```nix
+services.treesinger = {
+  enable = true;
+  user = "dan";
+  stateDir = "/data/servers/treesinger";
+};
+```
+
+A client, by hand (Chandlery's `services.chandlery.servers.<n>.treesinger.socket`
+does this for its Hytale servers):
+
+```nix
+systemd.services.hytale = {
+  wants = [ "treesinger.service" ];
+  after = [ "treesinger.service" ];
+  serviceConfig = {
+    SupplementaryGroups = [ config.services.treesinger.group ];
+    BindReadOnlyPaths = [ "-/run/treesinger" ];
+    ExecStart = "${lib.getExe treesinger.packages.${pkgs.stdenv.hostPlatform.system}.treesinger-env} "
+      + "--socket ${config.services.treesinger.socket} -- ${hytale}/bin/hytale-server";
+  };
+};
+```
+
+The flake also has `packages.<system>.treesinger-env`, `overlays.default`
+(`pkgs.treesinger`, `pkgs.treesinger-env`) and a VM test in
+`checks.x86_64-linux.nixos`. [`docs/systemd.md`](docs/systemd.md) has the
+design and the reasons behind it.
+
+The broker needs no Tidewaiter or Portical: restarting it never disturbs a
+running server (servers only ask it for a session when they start), and it must
+never be forwarded to the internet.
+
 ## Development
 
 ```sh
 bun test          # all in-memory: fake upstream fetch + a stopped clock
-bun run typecheck
+bun run check     # typecheck
+nix flake check   # the package, the tests and typecheck in the sandbox, and the VM test
 ```
+
+The Nix build installs `node_modules` as a fixed-output derivation. When
+`bun.lock` changes, set `outputHash` in `nix/node-modules.nix` to
+`lib.fakeHash`, build, and copy the hash from the error.
 
 **Design.** One yadic container factory builds the whole graph; production calls
 it once, each test calls it fresh and overwrites the leaf doubles (`fetch`,
