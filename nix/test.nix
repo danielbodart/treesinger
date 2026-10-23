@@ -66,6 +66,20 @@ pkgs.testers.runNixOSTest {
             + "${pkgs.runtimeShell} -c 'echo token=$${HYTALE_SERVER_SESSION_TOKEN:-none}; exec sleep infinity'";
         };
       };
+
+      # In a user namespace the treesinger group is unmapped, shown as
+      # nogroup, but the kernel checks the real gid: it still connects.
+      systemd.services.private-users-client = {
+        after = [ "treesinger.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          User = "bob";
+          SupplementaryGroups = [ "treesinger" ];
+          PrivateUsers = true;
+          ExecStart = "${pkgs.lib.getExe pkgs.curl} -sS -o /dev/null -w 'status=%{http_code}\\n' "
+            + "--unix-socket /run/treesinger/treesinger.sock http://treesinger/health";
+        };
+      };
     };
 
     # Dan's shape: an existing user, state outside /var/lib, TCP as well, a
@@ -128,6 +142,10 @@ pkgs.testers.runNixOSTest {
         defaults.succeed("journalctl -u confined-client | grep -q 'returned error: 401'")
         pid = defaults.succeed("systemctl show -P MainPID confined-client").strip()
         assert defaults.succeed(f"${inClient "pid"} ${pkgs.coreutils}/bin/ls /run").split() == ["treesinger"]
+
+    with subtest("defaults: a client with PrivateUsers still connects through the group"):
+        defaults.systemctl("start private-users-client")
+        defaults.succeed("journalctl -u private-users-client -o cat | grep -qx status=503")
 
     with subtest("defaults: a restart keeps the directory, so the client still sees the socket"):
         inode = defaults.succeed("stat -c %i /run/treesinger")
