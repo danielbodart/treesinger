@@ -1,8 +1,11 @@
 # Treesinger on systemd — design
 
-> **Status:** design for the `systemd` branch. Nothing here is built yet except
-> the mechanical refactor noted under [Refactors done](#refactors-done). Read
-> this end to end before implementing.
+> **Status:** design for the `systemd` branch. **Built so far:** the listeners,
+> readiness and `health` in the app, with tests, and the flake's package and
+> checks (`nix flake check` green on x86_64-linux). **Still to build:** the
+> NixOS module, the VM test, `treesinger-env`, `contrib/systemd/` and the
+> README sections. Where building found reality different from the design,
+> this document has been corrected.
 
 Treesinger today is a Docker image: one container, a volume holding
 `tokens.json`, reached by name over a compose network on TCP `:8080`. This
@@ -57,9 +60,14 @@ interface Config {
 
 `serve` (in `src/serve.ts`) does, for the socket:
 
-1. If something already exists at the path **and it is a socket**, unlink it (a
-   stale socket from a crash, or one left by `RuntimeDirectoryPreserve`). If it
-   exists and is *not* a socket, refuse to start — never delete a user's file.
+1. If something already exists at the path **and it is a socket nobody answers
+   on**, unlink it (a stale socket from a crash or a SIGKILL — Bun's default
+   SIGTERM exit leaves one too — kept by `RuntimeDirectoryPreserve`). Bun's
+   bind does not do this itself: it fails `EADDRINUSE`. A socket that *does*
+   answer (probed with a `connect()`) is another live broker, almost certainly
+   on the same store, which the single-writer design forbids — refuse to start
+   rather than steal it. Anything that is *not* a socket — refuse to start,
+   never delete a user's file.
 2. `Bun.serve({ unix: path, fetch: c.app })`.
 3. `chmod 0660` the socket. Bun binds with the process umask (measured: `0755`
    under umask 022, which a non-owner cannot even `connect()` to), so the mode
@@ -69,6 +77,17 @@ interface Config {
 
 Then, once every listener is bound, readiness (below), then the log line
 (`serving on unix:/run/treesinger/treesinger.sock` and/or `http://host:port`).
+If a later listener or the notify fails, the ones already open are closed, so
+a failed start leaves no socket behind.
+
+On `SIGTERM`/`SIGINT` `serve` stops its listeners — `server.stop()` unlinks
+the socket — and exits `0`. So a cleanly stopped broker leaves no socket, and
+a client sees `ENOENT` rather than `ECONNREFUSED` (it treats both as "boot
+unauthenticated").
+
+In code: `listen(config, fetch)` opens the listeners, `start(c, notify, env)`
+adds readiness and the log line (both tested directly), and `serve(c)` is
+`start` plus the signal handlers and a promise that never resolves.
 
 ### Socket activation — investigated, not possible
 
@@ -96,7 +115,11 @@ after every listener is bound, `serve` runs `systemd-notify --ready` (Bun has
 no `sd_notify` and cannot send to a unix datagram socket natively; spawning the
 helper is the portable way). Because the notification comes from a child, the
 unit needs `NotifyAccess=all`. Without `NOTIFY_SOCKET` (Docker, a shell)
-nothing is spawned.
+nothing is spawned. `systemd-notify` is looked up on `PATH` — the package does
+not pull systemd into its closure; a NixOS unit's default `path` has it, and a
+plain systemd host has it in `/usr/bin`. If it is missing or fails, `serve`
+closes its listeners and exits non-zero rather than sit unready until
+`TimeoutStartSec`.
 
 "Ready" means **listening**, not **logged in**: an unauthenticated broker is up
 and answers `/health` with `503` and `/v1/session` with `401 not_logged_in`,
@@ -175,20 +198,34 @@ Inputs: `nixpkgs` (`nixos-unstable`). Systems: `x86_64-linux`,
 - **Bundle, not `--compile`**: `bun build --target=bun --minify --define
   TREESINGER_VERSION="…" src/main.ts --outfile $out/lib/treesinger/treesinger.js`,
   then `makeWrapper ${bun}/bin/bun $out/bin/treesinger --add-flags
-  $out/lib/treesinger/treesinger.js`. Rationale: `--compile` appends the JS to a
+  "--no-env-file --config=/dev/null $out/lib/treesinger/treesinger.js"`. The two
+  flags matter: `bun` otherwise loads a `.env` (measured: it set
+  `TREESINGER_PORT`) and a `bunfig.toml` from whatever directory `treesinger`
+  is run in. Rationale for the bundle: `--compile` appends the JS to a
   copy of the bun executable, which `strip`/`patchelf` in the fixup phase can
   mangle; a bundle sidesteps that, needs no `node_modules` at runtime, and the
   runtime closure is the same nixpkgs `bun` either way. (Fallback if the bundle
   misbehaves: `--compile` with `dontStrip = true; dontPatchELF = true;`.)
 - **Version**: `run.ts` derives `major.commit-count.build`. The flake does the
   same from what Nix knows: `"${major}.${toString self.revCount}.0"` for a
-  clean git checkout, `"development"` for a dirty tree (no `revCount`), so the
-  name never claims a release it is not. `major` is read from `package.json`.
-- The **checks** reuse the FOD `node_modules` (copied, not symlinked, so bun's
-  resolution sees a real tree) and run `bun run.ts check` / `bun run.ts test`.
-  `run.ts check` now runs `tsc` under bun (`bun x --bun tsc`) so it needs no
-  `node` — true in the sandbox, and on a mise host with no node pinned (it
-  failed there before this branch).
+  clean git checkout; a tarball fetch (`github:` input) has a revision but no
+  count, so `"${major}.0.0-${shortRev}"`; a dirty tree has neither, so
+  `"development"` — the name never claims a release it is not. `major` is read
+  from `package.json`.
+- The package's source is only what the bundle needs (`src/`, `package.json`,
+  `bun.lock`, `bunfig.toml`, `tsconfig.json`), so editing a test does not
+  rebuild it. The **checks** are the same derivation with `run.ts` and `test/`
+  added, reusing the FOD `node_modules` (copied, not symlinked, so bun's
+  resolution sees a real tree) and running `bun run.ts check` / `bun run.ts
+  test` in place of the bundle.
+  `run.ts check` runs `bun node_modules/typescript/bin/tsc --noEmit`: both
+  `bunx tsc` and `bun x --bun tsc` exec tsc's `#!/usr/bin/env node` shebang,
+  which needs a node (absent on a mise host pinning only bun) and
+  `/usr/bin/env` (absent in the sandbox, where it failed with no output).
+- **The `node_modules` hash does not depend on the bun version** — measured:
+  `--rebuild` of the FOD with nixos-unstable's bun 1.4.2 and with
+  nixos-26.05's 1.3.13 (via `--override-input nixpkgs`) both match, and the
+  checks pass on both.
 
 ## NixOS module: `services.treesinger`
 
@@ -426,15 +463,21 @@ tidewaiter`, and the README says why.
   honoured.
 - `test/serve.test.ts` (new; real `Bun.serve` on a temp dir, no network):
   - socket listener answers `GET /health` (503 with an empty store) and
-    `POST /v1/session` (401 `not_logged_in`);
+    `POST /v1/session` (401 `not_logged_in`); no TCP listener with a socket alone;
   - socket mode is `0660` regardless of umask;
-  - a stale socket at the path is replaced; a regular file at the path is
-    refused and left intact;
-  - socket + TCP both answer;
-  - `health()` exit code over socket and over TCP;
-  - `systemd-notify` is spawned only when `NOTIFY_SOCKET` is set (the spawn is
-    an injected seam, so the test records the call rather than running it).
-- Existing 26 tests stay green.
+  - a stale socket (left by a SIGKILLed child broker) is replaced; a live one
+    is refused and keeps answering; a regular file at the path is refused and
+    left intact; stopping removes the socket;
+  - socket + TCP both answer; a TCP bind failure closes the socket already open;
+  - `health()` exit code over socket and over TCP, and with nothing listening;
+  - readiness is notified once, after the socket exists (an injected `Notify`);
+    a failed notify closes the listeners; `systemdNotify` does nothing without
+    `NOTIFY_SOCKET` and rejects when it cannot reach it.
+- Existing 26 tests stay green: **48/48** now, locally and in the sandbox.
+- Also run by hand: `systemd-run --user -p Type=notify -p NotifyAccess=all`
+  with `TREESINGER_SOCKET` (the packaged binary and `bun src/main.ts`): the unit
+  goes `active` only once listening, the socket is `srw-rw----`, `/health`
+  503, `/v1/session` 401, and `systemctl stop` removes the socket.
 
 ### Nix
 
@@ -476,9 +519,10 @@ Mechanical, behaviour unchanged, 26/26 tests green, typecheck clean:
 - `serve` and `health` moved from `src/main.ts` to `src/serve.ts` (main.ts
   calls `process.exit` at top level, so nothing in it can be imported by a
   test; the listener logic that this branch adds needs tests).
-- `run.ts check` runs `bun x --bun tsc --noEmit` instead of `bunx tsc` — `tsc`'s
+- `run.ts check` runs tsc's script with bun instead of `bunx tsc` — `tsc`'s
   `#!/usr/bin/env node` shebang failed on a host whose mise pins no node, and
-  there is no node in the Nix sandbox.
+  there is neither node nor `/usr/bin/env` in the Nix sandbox (see
+  [the build](#how-the-package-builds-in-the-sandbox)).
 - `.gitignore`: `result`, `result-*`.
 
 ## Open questions
@@ -492,7 +536,9 @@ Mechanical, behaviour unchanged, 26/26 tests green, typecheck clean:
    (pinned nixpkgs `bun`, matching the FOD hash). Building against the
    consumer's `pkgs` via the overlay instead would follow their `bun` but risks
    the `node_modules` hash drifting with a bun version that writes the tree
-   differently. Proposed: own pin by default, overlay available.
+   differently — not so far: 1.3.13 and 1.4.2 give the same hash, so
+   `inputs.nixpkgs.follows` is safe today. Proposed: own pin by default,
+   overlay available.
 3. **`DynamicUser`**: not offered (see why). Worth an opt-in
    `dynamicUser = true` that names the dynamic user `treesinger-broker` and keeps
    the static `treesinger` group as a supplementary group + `chgrp` of the socket?
@@ -503,7 +549,8 @@ Mechanical, behaviour unchanged, 26/26 tests green, typecheck clean:
    fake upstream (the fake already exists in `test/support`). Out of scope
    unless wanted.
 5. **Bun version skew**: mise pins 1.3.14; nixpkgs `nixos-unstable` ships
-   1.4.x. `bun.lock` (lockfileVersion 1) reads under both, but the flake build
+   1.4.2, nixos-26.05 1.3.13. `bun.lock` (lockfileVersion 1) reads under all
+   of them and the tests pass on 1.3.13, 1.3.14 and 1.4.2, but the flake build
    and the Docker/mise build will run different bun minors.
-6. **arm64**: the flake lists `aarch64-linux` for the package; unverified on
-   real hardware (no builder here).
+6. **arm64**: the flake lists `aarch64-linux` for the package; it evaluates
+   (`nix flake check --all-systems --no-build`) but is unbuilt (no builder here).
