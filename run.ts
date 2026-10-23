@@ -50,10 +50,14 @@ export async function test(...args: string[]) {
  * file, so nothing is written into src/ that would then show up as a change.
  * src/version.ts falls back when the define is absent, which is what happens
  * under `bun run src/main.ts`.
+ *
+ * A compiled binary would otherwise read a .env and bunfig.toml from whatever
+ * directory it is run in: `sudo -u treesinger treesinger login` from a project
+ * directory could pick up someone else's TREESINGER_STORE.
  */
 export async function build(outfile = "dist/treesinger") {
   const v = await version();
-  await $`bun build --compile --minify --sourcemap --target=bun-linux-x64 --define ${`TREESINGER_VERSION="${v}"`} src/main.ts --outfile ${outfile}`;
+  await $`bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --minify --sourcemap --target=bun-linux-x64 --define ${`TREESINGER_VERSION="${v}"`} src/main.ts --outfile ${outfile}`;
   console.log(`built ${outfile} ${v}`);
 }
 
