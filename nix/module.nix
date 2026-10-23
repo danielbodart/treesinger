@@ -1,5 +1,5 @@
 # services.treesinger: the broker as a hardened systemd service, listening on
-# a unix socket whose group is the access boundary. See docs/systemd.md.
+# a unix socket whose group is the access boundary. See docs/systemd-design.md.
 { config, lib, pkgs, ... }:
 
 let

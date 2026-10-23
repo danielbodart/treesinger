@@ -58,7 +58,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64
+          # The Dockerfile cross-compiles with Bun from the build platform, so
+          # arm64 costs seconds, not a QEMU toolchain.
+          platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/trunk' }}
           # :latest is what compose pulls; the exact version is what makes it
           # possible to pin one, and to roll back to one.
@@ -70,13 +72,34 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Build binary
-        run: bun run.ts build dist/treesinger-linux-x64
+      # Both binaries, the plain unit and sysusers file, treesinger-env and
+      # their checksums, into dist/release.
+      - name: Build release
+        run: bun run.ts release
 
+      # A release whose binary disagrees with its tag is worse than none.
+      - name: Check the version
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          built=$(dist/release/treesinger-linux-x64 version)
+          [ "$built" = "$VERSION" ] || { echo "the binary says $built but the release is $VERSION"; exit 1; }
+
+      # The VM test in nix/test.nix runs this unit for real, but CI does not run
+      # it, so the unit is at least checked against a real systemd here, with
+      # its user and its binary where it expects them.
+      - name: Verify the systemd unit
+        run: |
+          sudo install -m 755 dist/release/treesinger-linux-x64 /usr/local/bin/treesinger
+          sudo systemd-sysusers contrib/systemd/treesinger.sysusers
+          systemd-analyze verify contrib/systemd/treesinger.service
+
+      # A re-run has the same run number and so the same version; the action
+      # then updates that release and replaces its assets rather than failing.
       - name: Release
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/trunk'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.value }}
           name: v${{ steps.version.outputs.value }}
-          files: dist/treesinger-linux-x64
+          files: dist/release/*

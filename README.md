@@ -33,7 +33,25 @@ Pull keeps the broker fleet-agnostic (adding a server is zero config) and avoids
 a start-order cycle: servers `depends_on` the broker being healthy, and the
 broker never waits to discover servers.
 
+The broker needs no Tidewaiter or Portical: restarting it never disturbs a
+running server (servers only ask it for a session when they start), and it must
+never be forwarded to the internet.
+
+## Running it
+
+How to run it depends on where your servers run:
+
+- **[Run it in Docker](docs/docker.md)**, beside servers in containers on the
+  same compose network. The image is `ghcr.io/danielbodart/treesinger`.
+- **[Run it on systemd](docs/systemd.md)**, beside servers running natively, on a
+  unix socket only their group can reach: from the flake's NixOS module, or from
+  a release binary and unit on any systemd distribution.
+
+The rest of this page applies however it runs.
+
 ## Quick start
+
+From a checkout:
 
 ```sh
 mise install                 # pins Bun
@@ -46,12 +64,8 @@ bun run login
 bun run start                # listens on :8080
 ```
 
-Or with the released binary / image:
-
-```sh
-treesinger login
-treesinger serve
-```
+Or with the released binary, as `treesinger login` then `treesinger serve` - each
+page above has the commands for its setup.
 
 ## HTTP surface
 
@@ -79,180 +93,6 @@ All via environment; every value has a default except the refresh token, which
 | `TREESINGER_SKEW_MS`      | `300000` (5 min)                         | Refresh the access token when less than this much life remains. |
 | `TREESINGER_OWNER_UUID`   | first profile                            | Which profile to mint for when the account has several. |
 | `TREESINGER_BEARER_TOKEN` | unset                                    | Optional shared secret for `/v1/session`. |
-
-## Docker / compose
-
-```yaml
-services:
-  treesinger:
-    image: ghcr.io/danielbodart/treesinger:latest
-    volumes:
-      - treesinger-data:/data          # holds the token store
-    networks: [fleet]
-    # image ships a self-contained HEALTHCHECK (treesinger health)
-
-  hytale-server:
-    image: ghcr.io/danielbodart/chandlery-hytale:latest
-    depends_on:
-      treesinger:
-        condition: service_healthy     # cold-start ordering; broker covers restarts
-    networks: [fleet]
-
-volumes:
-  treesinger-data:
-networks:
-  fleet:
-```
-
-The consumer image fetches a pair from `POST /v1/session` at boot and passes them
-as the game's own `--session-token` / `--identity-token`. No shared secret;
-network isolation is the boundary.
-
-Run `login` once against the same volume before the first `serve`:
-
-```sh
-docker run --rm -it -v treesinger-data:/data ghcr.io/danielbodart/treesinger login
-```
-
-## systemd
-
-Natively, the broker listens on a **unix socket** instead of a network port:
-`/run/treesinger/treesinger.sock`, mode `0660`, group `treesinger`. Being in
-that group is what lets a server mint a session. There is no TCP listener
-unless you set `TREESINGER_PORT` as well. The unit is `Type=notify`, so anything
-ordered `After=treesinger.service` finds the socket already there.
-
-There is no `treesinger.socket` unit: Bun cannot serve on a socket handed
-over by systemd, so the service makes its own, in its runtime directory.
-
-### Without Nix
-
-[`contrib/systemd`](contrib/systemd) has the unit (hardened, see
-`systemd-analyze security treesinger`) and a sysusers file for the
-`treesinger` user and group.
-
-```sh
-sudo install -m 755 treesinger-linux-x64 /usr/local/bin/treesinger   # from Releases
-sudo install -m 644 contrib/systemd/treesinger.sysusers /etc/sysusers.d/treesinger.conf
-sudo install -m 644 contrib/systemd/treesinger.service /etc/systemd/system/
-sudo systemd-sysusers
-sudo systemctl daemon-reload
-sudo systemctl enable --now treesinger
-
-# The one-time login, as the broker's user, into its store. No restart after:
-# the broker reads the store on every request.
-sudo -u treesinger TREESINGER_STORE=/var/lib/treesinger/tokens.json treesinger login
-```
-
-### A Hytale server as a client
-
-Join the group, order after the broker (which waits for
-`network-online.target`, so the mint at boot can reach Hypixel), and mint the
-session as the server starts.
-[`contrib/treesinger-env`](contrib/treesinger-env) (needs `curl` and `jq`) does
-that by wrapping `ExecStart`, so the tokens are never written to a file: it asks
-the broker for a session, puts it in the variables the server
-reads itself (`HYTALE_SERVER_SESSION_TOKEN` / `HYTALE_SERVER_IDENTITY_TOKEN`,
-never argv), then `exec`s the server. If the broker is down or not logged in, it
-warns and starts the server unauthenticated.
-
-```ini
-[Unit]
-Wants=treesinger.service
-After=treesinger.service
-
-[Service]
-SupplementaryGroups=treesinger
-ExecStart=/usr/local/bin/treesinger-env --socket /run/treesinger/treesinger.sock -- \
-    java -jar /opt/hytale/Server/HytaleServer.jar --assets /opt/hytale/Assets.zip
-# A confined server: bind the broker's directory, not the socket, which a
-# restart of the broker replaces. "-" boots it unauthenticated without one.
-BindReadOnlyPaths=-/run/treesinger
-```
-
-An `ExecStartPre` works too: have it write the two variables to a 0600 file
-in the unit's `RuntimeDirectory`, read with `EnvironmentFile=-` (systemd reads
-it again before `ExecStart`), and remove the file when the mint fails, so a
-stale session is never reused.
-
-A client may use `PrivateUsers=yes`: the `treesinger` group is unmapped in its
-user namespace, but the kernel checks the real group, so it still connects.
-
-### NixOS
-
-```nix
-{
-  inputs.treesinger.url = "github:danielbodart/treesinger";
-
-  outputs = { nixpkgs, treesinger, ... }: {
-    nixosConfigurations.server = nixpkgs.lib.nixosSystem {
-      modules = [
-        treesinger.nixosModules.default
-        { services.treesinger.enable = true; }
-      ];
-    };
-  };
-}
-```
-
-Then, once, `sudo treesinger-login`: it runs the device login as the broker's
-user, in the broker's sandbox and with its environment, so the token lands
-where the broker reads it.
-
-| Option | Default | |
-|---|---|---|
-| `enable` | `false` | |
-| `package` | this flake's | |
-| `user` | `"treesinger"` | Created when left as `treesinger`; any other user must exist and own `stateDir`. |
-| `group` | `"treesinger"` | The socket's group; created when left as `treesinger`. |
-| `stateDir` | `"/var/lib/treesinger"` | Holds `tokens.json`. Any other path must already exist; it is never created or chowned. |
-| `socket` | `"/run/treesinger/treesinger.sock"` | `null` for none. |
-| `port` | `null` | TCP as well. |
-| `host` | `"127.0.0.1"` | TCP bind address. |
-| `openFirewall` | `false` | Open `port`. |
-| `ownerUuid` | `null` | Profile to mint for. |
-| `bearerTokenFile` | `null` | Shared secret for `/v1/session`, read with `LoadCredential`, so never in the store: an absolute path as a string, not `./file`. |
-| `environment` | `{}` | Extra environment, e.g. `TREESINGER_SKEW_MS`. |
-| `environmentFile` | `null` | `EnvironmentFile=`. |
-
-For instance, as an existing user with the state a container left behind
-(its `/data/tokens.json`, here on the host) — stop the container, switch, no
-new login:
-
-```nix
-services.treesinger = {
-  enable = true;
-  user = "dan";
-  stateDir = "/data/servers/treesinger";
-};
-```
-
-A client, by hand (Chandlery's `services.chandlery.servers.<n>.treesinger.socket`
-does this for its Hytale servers). Ordering after the broker also waits for
-`network-online.target`, which the broker wants, so the mint at boot can reach
-Hypixel:
-
-```nix
-systemd.services.hytale = {
-  wants = [ "treesinger.service" ];
-  after = [ "treesinger.service" ];
-  serviceConfig = {
-    SupplementaryGroups = [ config.services.treesinger.group ];
-    BindReadOnlyPaths = [ "-/run/treesinger" ];
-    ExecStart = "${lib.getExe treesinger.packages.${pkgs.stdenv.hostPlatform.system}.treesinger-env} "
-      + "--socket ${config.services.treesinger.socket} -- ${hytale}/bin/hytale-server";
-  };
-};
-```
-
-The flake also has `packages.<system>.treesinger-env`, `overlays.default`
-(`pkgs.treesinger`, `pkgs.treesinger-env`) and a VM test in
-`checks.x86_64-linux.nixos`. [`docs/systemd.md`](docs/systemd.md) has the
-design and the reasons behind it.
-
-The broker needs no Tidewaiter or Portical: restarting it never disturbs a
-running server (servers only ask it for a session when they start), and it must
-never be forwarded to the internet.
 
 ## Development
 
@@ -289,20 +129,19 @@ deliberate part (in `package.json`); the minor only ever rises and names exactly
 one commit; the patch separates two builds of the same commit. `treesinger
 version` reports what a build calls itself (`development` when run from source).
 
-Each trunk push builds and publishes both a standalone `bun-linux-x64` binary
-(attached to a GitHub Release `v<version>`) and a Docker image to GHCR
-(`ghcr.io/danielbodart/treesinger:<version>` and `:latest`). A pull request builds
+Each trunk push publishes a GitHub Release `v<version>` and a Docker image to
+GHCR (`ghcr.io/danielbodart/treesinger:<version>` and `:latest`), both for
+`x64` and `arm64`. The release carries standalone binaries
+(`treesinger-linux-x64`, `treesinger-linux-arm64`), the plain systemd unit and
+sysusers file, `treesinger-env`, and `SHA256SUMS`. A pull request builds
 everything but publishes nothing.
 
 ```sh
 bun run.ts version   # what this checkout would publish as
 bun run.ts build     # compile dist/treesinger with the version baked in
+bun run.ts release   # the release's binaries, unit files and checksums, into dist/release/
 bun run.ts image     # build the same image CI publishes, locally
 ```
-
-> arm64 is one line away in both the Dockerfile (`--target` already keys off
-> `TARGETARCH`) and the workflow (`platforms:`); the fleet target was x64, so
-> that is all CI builds today.
 
 ## License
 

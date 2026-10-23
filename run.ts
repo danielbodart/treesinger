@@ -55,16 +55,43 @@ export async function test(...args: string[]) {
  * directory it is run in: `sudo -u treesinger treesinger login` from a project
  * directory could pick up someone else's TREESINGER_STORE.
  */
+async function compile(v: string, target: string, outfile: string) {
+  await $`bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --minify --sourcemap --target=${target} --define ${`TREESINGER_VERSION="${v}"`} src/main.ts --outfile ${outfile}`;
+}
+
 export async function build(outfile = "dist/treesinger") {
   const v = await version();
-  await $`bun build --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --minify --sourcemap --target=bun-linux-x64 --define ${`TREESINGER_VERSION="${v}"`} src/main.ts --outfile ${outfile}`;
+  await compile(v, "bun-linux-x64", outfile);
   console.log(`built ${outfile} ${v}`);
 }
 
-/** The same image CI publishes, built locally. */
+/**
+ * What a GitHub release carries: a binary per architecture, the plain systemd
+ * unit and sysusers file that run it, the client helper, and their checksums,
+ * all in one directory for CI to upload as they are. The binaries are glibc
+ * builds, for the distributions a native install is for; the image's musl
+ * build is for Alpine.
+ *
+ * x64 is Bun's baseline build, which runs without AVX2. The low-power Celerons
+ * and Atoms in a lot of home servers do not have it.
+ */
+export async function release(dir = "dist/release") {
+  const v = await version();
+  await $`rm -rf ${dir} && mkdir -p ${dir}`;
+  for (const [arch, target] of [["x64", "bun-linux-x64-baseline"], ["arm64", "bun-linux-arm64"]]) {
+    await compile(v, target, `${dir}/treesinger-linux-${arch}`);
+  }
+  // The map is in the binary already; the copy beside it is not an asset.
+  await $`rm -f ${dir}/main.js.map`;
+  await $`cp contrib/systemd/treesinger.service contrib/systemd/treesinger.sysusers contrib/treesinger-env ${dir}/`;
+  await $`sha256sum treesinger-linux-x64 treesinger-linux-arm64 treesinger.service treesinger.sysusers treesinger-env > SHA256SUMS`.cwd(dir);
+  console.log(`built ${dir} ${v}`);
+}
+
+/** The same image CI publishes, for both architectures, built locally. */
 export async function image(tag = "ghcr.io/danielbodart/treesinger:dev") {
   const v = await version();
-  await $`docker buildx build --platform linux/amd64 --build-arg VERSION=${v} --tag ${tag} .`;
+  await $`docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION=${v} --tag ${tag} .`;
 }
 
 const commands: Record<string, (...args: string[]) => Promise<unknown>> = {
@@ -72,6 +99,7 @@ const commands: Record<string, (...args: string[]) => Promise<unknown>> = {
   check,
   test,
   build,
+  release,
   image,
 };
 

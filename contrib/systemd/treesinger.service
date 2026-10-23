@@ -2,7 +2,7 @@
 # Needs the user from treesinger.sysusers, and the release binary at
 # /usr/local/bin/treesinger. Then, once:
 #   sudo -u treesinger TREESINGER_STORE=/var/lib/treesinger/tokens.json treesinger login
-# Clients join the treesinger group and POST to the socket. See README.md.
+# Clients join the treesinger group and POST to the socket. See docs/systemd.md.
 [Unit]
 Description=Treesinger: Hytale server authentication broker
 # Clients mint their sessions as soon as this is ready, once, at boot: wait
