@@ -54,14 +54,13 @@ The rest of this page applies however it runs.
 From a checkout:
 
 ```sh
-mise install                 # pins Bun
-bun install
+mise install                 # pins Go
 
 # One-time device login — prints a URL + code, writes the refresh token.
-bun run login
+go run . login
 
 # Run the broker.
-bun run start                # listens on :8080
+go run . serve               # listens on :8080
 ```
 
 Or with the released binary, as `treesinger login` then `treesinger serve` - each
@@ -97,24 +96,25 @@ All via environment; every value has a default except the refresh token, which
 ## Development
 
 ```sh
-bun test          # all in-memory: fake upstream fetch + a stopped clock
-bun run check     # typecheck
-nix flake check   # the package, the tests and typecheck in the sandbox, and the VM test
+./run test        # all in-memory: a fake upstream handler + a stopped clock
+./run check       # gofmt and go vet
+nix flake check   # the package (its build runs the tests) and the VM test
 ```
 
-The Nix build installs `node_modules` as a fixed-output derivation. When
-`bun.lock` changes, set `outputHash` in `nix/node-modules.nix` to
-`lib.fakeHash`, build, and copy the hash from the error.
+Go and the standard library, nothing else: `go.mod` requires no modules.
 
-**Design.** One yadic container factory builds the whole graph; production calls
-it once, each test calls it fresh and overwrites the leaf doubles (`fetch`,
-`clock`, `store`, `config`) *before* the graph is realised — the one legal
-mutation, since a lazy dependency is settable until its first access. Every HTTP
-surface, including the upstream client, is a `(Request) => Promise<Response>`, so
-tests swap a fake that replays recorded response shapes. All time-driven
-decisions are pure functions of the clock and stored expiry.
+**Design.** One container builds the whole graph (`internal/broker/container.go`):
+production wires it once, each test wires a fresh one after setting the leaf
+doubles (`Transport`, `Clock`, `Store`, `Config`, ...) — a leaf left unset gets
+its production default when `Wire()` runs, and everything downstream is derived,
+never set. The upstream client is an `http.RoundTripper`, with retrying and
+logging as decorators around it, and the broker itself is an `http.Handler`;
+`HandlerTransport` serves a handler in memory as a round tripper, so the fake
+Hytale in the tests is just a handler replaying recorded response shapes, with
+no sockets or ports. All time-driven decisions are pure functions of the clock
+and stored expiry.
 
-Concurrent refreshes are coalesced onto a single in-flight promise (see
+Concurrent refreshes are coalesced onto a single in-flight refresh (see
 `OAuthClient`), so the rotating refresh token is spent exactly once no matter how
 many servers boot at the same moment — this, not a lock, is what makes a
 double-spend structurally impossible. It assumes a single writer process; running
@@ -124,8 +124,8 @@ multiple broker instances against one store would reintroduce the race.
 
 **`trunk` is production.** Every push to it publishes: there are no manual tags
 and no release branches. The version is *derived from the repository*, not stored
-in it — `major.commit-count.ci-run` (see `run.ts`). The major is the one
-deliberate part (in `package.json`); the minor only ever rises and names exactly
+in it — `major.commit-count.ci-run` (see `./run`). The major is the one
+deliberate part (in `MAJOR`); the minor only ever rises and names exactly
 one commit; the patch separates two builds of the same commit. `treesinger
 version` reports what a build calls itself (`development` when run from source).
 
@@ -136,11 +136,14 @@ GHCR (`ghcr.io/danielbodart/treesinger:<version>` and `:latest`), both for
 sysusers file, `treesinger-env`, and `SHA256SUMS`. A pull request builds
 everything but publishes nothing.
 
+The binaries are static, so one build runs on any distribution, and the image
+is that binary on an empty base.
+
 ```sh
-bun run.ts version   # what this checkout would publish as
-bun run.ts build     # compile dist/treesinger with the version baked in
-bun run.ts release   # the release's binaries, unit files and checksums, into dist/release/
-bun run.ts image     # build the same image CI publishes, locally
+./run version   # what this checkout would publish as
+./run build     # compile dist/treesinger with the version baked in
+./run release   # the release's binaries, unit files and checksums, into dist/release/
+./run image     # build the same image CI publishes, locally
 ```
 
 ## License

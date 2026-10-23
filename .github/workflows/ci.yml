@@ -19,11 +19,10 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: jdx/mise-action@v4
-      - run: bun install --frozen-lockfile
-      - name: Typecheck
-        run: bun run.ts check
+      - name: Format and vet
+        run: ./run check
       - name: Test
-        run: bun run.ts test
+        run: ./run test
 
   publish:
     runs-on: ubuntu-latest
@@ -31,16 +30,15 @@ jobs:
     steps:
       # The whole history, because the version's minor is the commit count and
       # the default shallow checkout would make every build claim to be the
-      # first. run.ts refuses to compute a version from a shallow clone.
+      # first. ./run refuses to compute a version from a shallow clone.
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: jdx/mise-action@v4
-      - run: bun install --frozen-lockfile
 
       - name: Version
         id: version
-        run: echo "value=$(bun run.ts version)" >> "$GITHUB_OUTPUT"
+        run: echo "value=$(./run version)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
@@ -58,7 +56,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          # The Dockerfile cross-compiles with Bun from the build platform, so
+          # The Dockerfile cross-compiles with Go from the build platform, so
           # arm64 costs seconds, not a QEMU toolchain.
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/trunk' }}
@@ -75,7 +73,7 @@ jobs:
       # Both binaries, the plain unit and sysusers file, treesinger-env and
       # their checksums, into dist/release.
       - name: Build release
-        run: bun run.ts release
+        run: ./run release
 
       # A release whose binary disagrees with its tag is worse than none.
       - name: Check the version

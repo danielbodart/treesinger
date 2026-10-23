@@ -11,9 +11,9 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-# Ready once listening; the notification comes from a child (systemd-notify).
+# Ready once listening; the broker sends the notification itself.
 Type=notify
-NotifyAccess=all
+NotifyAccess=main
 ExecStart=/usr/local/bin/treesinger serve
 Environment=TREESINGER_STORE=/var/lib/treesinger/tokens.json
 Environment=TREESINGER_SOCKET=/run/treesinger/treesinger.sock
@@ -49,18 +49,18 @@ ProtectClock=yes
 ProtectHostname=yes
 ProtectProc=invisible
 ProcSubset=pid
-# unix for the socket and systemd-notify; inet for HTTPS to Hypixel.
+# unix for the socket and the readiness datagram; inet for HTTPS to Hypixel.
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 RemoveIPC=yes
 LockPersonality=yes
-# JavaScriptCore compiles JIT code into writable, executable memory.
-MemoryDenyWriteExecute=no
+MemoryDenyWriteExecute=yes
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-# Not ~@resources: bun 1.3 calls sched_setscheduler on its threads.
+# Not ~@resources: the Go runtime raises its open-file limit (setrlimit) as
+# it starts, and a filtered call is SIGSYS.
 SystemCallFilter=~@privileged
 CapabilityBoundingSet=
 AmbientCapabilities=

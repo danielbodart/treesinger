@@ -9,8 +9,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -34,17 +32,15 @@ type Decorator func(http.RoundTripper) http.RoundTripper
 // Logger is the slice of a console we use; a capturing double satisfies it.
 type Logger interface {
 	Log(args ...any)
-	Warn(args ...any)
 	Error(args ...any)
 }
 
 type consoleLogger struct{}
 
-// ConsoleLogger logs to stdout, and warnings and errors to stderr.
+// ConsoleLogger logs to stdout, and errors to stderr.
 func ConsoleLogger() Logger { return consoleLogger{} }
 
 func (consoleLogger) Log(args ...any)   { fmt.Fprintln(os.Stdout, args...) }
-func (consoleLogger) Warn(args ...any)  { fmt.Fprintln(os.Stderr, args...) }
 func (consoleLogger) Error(args ...any) { fmt.Fprintln(os.Stderr, args...) }
 
 // UpstreamError is a non-2xx (or otherwise unusable) upstream response,
@@ -55,35 +51,31 @@ type UpstreamError struct {
 	Status  int
 	Code    string
 	Message string
-	// Value is the upstream `error` exactly as sent, when there was one. It is
-	// what the client is answered with, so a code that is not a string (a
-	// number, an object) passes through as it does in the TypeScript, where
-	// Code is String() of it.
-	Value json.RawMessage
 }
 
 func (e *UpstreamError) Error() string { return e.Message }
 
 // upstreamFailure is the UpstreamError for a non-2xx response whose body was
-// data: `upstream <status>: <error, else the reason phrase>`.
-func upstreamFailure(response *http.Response, data []byte) *UpstreamError {
-	value, found := errorField(data)
-	if !found {
-		return &UpstreamError{Status: response.StatusCode, Code: "unknown", Message: fmt.Sprintf("upstream %d: %s", response.StatusCode, reasonPhrase(response))}
+// data: `upstream <status>: <error, else the status text>`.
+func upstreamFailure(status int, data []byte) *UpstreamError {
+	code := errorCode(data)
+	detail := code
+	if code == "unknown" {
+		detail = http.StatusText(status)
 	}
-	code := jsonText(value)
-	return &UpstreamError{Status: response.StatusCode, Code: code, Value: value, Message: fmt.Sprintf("upstream %d: %s", response.StatusCode, code)}
+	return &UpstreamError{Status: status, Code: code, Message: fmt.Sprintf("upstream %d: %s", status, detail)}
 }
 
-// reasonPhrase is the status text upstream actually sent ("503 Origin Is
-// Unreachable"), as fetch's statusText is, falling back to the canonical one
-// when it sent none.
-func reasonPhrase(response *http.Response) string {
-	phrase := strings.TrimSpace(strings.TrimPrefix(response.Status, strconv.Itoa(response.StatusCode)))
-	if phrase == "" {
-		return http.StatusText(response.StatusCode)
+// errorCode is the `error` string of an OAuth-style error body, or "unknown"
+// when there is none to read.
+func errorCode(data []byte) string {
+	var body struct {
+		Error string `json:"error"`
 	}
-	return phrase
+	if json.Unmarshal(data, &body) != nil || body.Error == "" {
+		return "unknown"
+	}
+	return body.Error
 }
 
 // RetryPolicy says how often, and after how long, Retrying tries again.
@@ -113,26 +105,12 @@ func Retrying(policy RetryPolicy) Decorator {
 	}
 	return func(inner http.RoundTripper) http.RoundTripper {
 		return RoundTripperFunc(func(request *http.Request) (*http.Response, error) {
-			var body []byte
-			if request.Body != nil && request.Body != http.NoBody {
-				buffered, err := io.ReadAll(request.Body)
-				request.Body.Close()
-				if err != nil {
-					return nil, err
-				}
-				body = buffered
-			}
-			build := func() *http.Request {
-				attempt := request.Clone(request.Context())
-				if body != nil {
-					attempt.Body = io.NopCloser(bytes.NewReader(body))
-					attempt.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
-					attempt.ContentLength = int64(len(body))
-				}
-				return attempt
+			body, err := buffer(request)
+			if err != nil {
+				return nil, err
 			}
 			for attempt := 0; ; attempt++ {
-				response, err := inner.RoundTrip(build())
+				response, err := inner.RoundTrip(withBody(request, body))
 				transient := err != nil || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500
 				if !transient || attempt >= policy.Retries {
 					return response, err
@@ -150,28 +128,42 @@ func Retrying(policy RetryPolicy) Decorator {
 	}
 }
 
-// Logging logs method + URL + status + duration around each call.
-//
-// Deviations, accepted: this and Retrying sit under http.Client, which follows
-// a redirect by calling its transport once per hop, so a redirect logs (and
-// retries) each hop where fetch, following redirects inside the call, logs one
-// line for the whole chain; Hytale's endpoints do not redirect. And an error is
-// logged as its one-line Error() text, not Bun's multi-line inspection of it.
+// buffer reads and closes a request's body, nil when it has none.
+func buffer(request *http.Request) ([]byte, error) {
+	if request.Body == nil || request.Body == http.NoBody {
+		return nil, nil
+	}
+	defer request.Body.Close()
+	return io.ReadAll(request.Body)
+}
+
+// withBody is a copy of request carrying its own reader over body.
+func withBody(request *http.Request, body []byte) *http.Request {
+	attempt := request.Clone(request.Context())
+	if body != nil {
+		attempt.Body = io.NopCloser(bytes.NewReader(body))
+		attempt.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+		attempt.ContentLength = int64(len(body))
+	}
+	return attempt
+}
+
+// Logging logs method + URL + status + duration around each call. Under
+// http.Client it sees each redirect hop as its own call; Hytale's endpoints do
+// not redirect.
 func Logging(logger Logger) Decorator {
 	return func(inner http.RoundTripper) http.RoundTripper {
 		return RoundTripperFunc(func(request *http.Request) (*http.Response, error) {
 			started := time.Now()
 			response, err := inner.RoundTrip(request)
 			if err != nil {
-				// A caller that hung up is not an upstream fault, and is
-				// nothing the TypeScript (which never cancels) would log.
+				// A caller that hung up is not an upstream fault.
 				if !cancelled(request, err) {
 					logger.Error(fmt.Sprintf("%s %s → threw", request.Method, request.URL), err)
 				}
 				return nil, err
 			}
-			elapsed := time.Since(started).Round(time.Millisecond).Milliseconds()
-			logger.Log(fmt.Sprintf("%s %s → %d (%dms)", request.Method, request.URL, response.StatusCode, elapsed))
+			logger.Log(fmt.Sprintf("%s %s → %d (%dms)", request.Method, request.URL, response.StatusCode, time.Since(started).Milliseconds()))
 			return response, nil
 		})
 	}
@@ -182,24 +174,17 @@ func cancelled(request *http.Request, err error) bool {
 	return errors.Is(err, context.Canceled) && request.Context().Err() != nil
 }
 
-// Identifying names Treesinger to upstream, as `treesinger/<version>`, rather
-// than leaving it to the runtime's default (Bun's fetch sends `Bun/<version>`,
-// Go's `Go-http-client/1.1`), and asks for any type, as fetch does by
-// default. Headers a request already carries are left alone.
+// Identifying names Treesinger to upstream as `treesinger/<version>`, rather
+// than as Go's generic `Go-http-client/1.1`.
 func Identifying(version string) Decorator {
 	return func(inner http.RoundTripper) http.RoundTripper {
 		return RoundTripperFunc(func(request *http.Request) (*http.Response, error) {
-			if request.Header.Get("User-Agent") != "" && request.Header.Get("Accept") != "" {
+			if request.Header.Get("User-Agent") != "" {
 				return inner.RoundTrip(request)
 			}
 			// A RoundTripper must not change the request it was given.
 			identified := request.Clone(request.Context())
-			if identified.Header.Get("User-Agent") == "" {
-				identified.Header.Set("User-Agent", "treesinger/"+version)
-			}
-			if identified.Header.Get("Accept") == "" {
-				identified.Header.Set("Accept", "*/*")
-			}
+			identified.Header.Set("User-Agent", "treesinger/"+version)
 			return inner.RoundTrip(identified)
 		})
 	}
@@ -217,47 +202,23 @@ func delay(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// ok decodes a 2xx JSON body into `into`, or returns an UpstreamError carrying
-// the status. The body is always consumed and closed.
-func ok(response *http.Response, into any) error {
+// decode reads a 2xx JSON body into `into`, or returns an UpstreamError
+// carrying the status. The body is always consumed and closed.
+func decode(response *http.Response, into any) error {
 	defer response.Body.Close()
 	data, err := io.ReadAll(response.Body)
 	if err != nil {
 		return err
 	}
-	if succeeded(response) {
-		return json.Unmarshal(data, into)
+	if !succeeded(response) {
+		return upstreamFailure(response.StatusCode, data)
 	}
-	return upstreamFailure(response, data)
-}
-
-// errorField is `body?.error`: the value under exactly the key "error" (not
-// "Error", which encoding/json's struct matching would also take), of any
-// type, tolerating a body that is missing, not JSON or not an object. A null
-// one counts as missing, as it does for `??`.
-func errorField(data []byte) (json.RawMessage, bool) {
-	object, isObject := jsonObject(data)
-	if !isObject || !present(object["error"]) {
-		return nil, false
+	if err := json.Unmarshal(data, into); err != nil {
+		return fmt.Errorf("%s %s: %w", response.Request.Method, response.Request.URL, err)
 	}
-	return object["error"], true
+	return nil
 }
 
 func succeeded(response *http.Response) bool {
 	return response.StatusCode >= 200 && response.StatusCode < 300
-}
-
-// marshal is JSON.stringify: compact, and with no HTML escaping.
-//
-// Deviation, accepted: encoding/json always writes U+2028 and U+2029 as
-// \u2028 and \u2029, and invalid UTF-8 as U+FFFD, where JSON.stringify writes
-// the raw characters. The documents mean the same; only the bytes differ.
-func marshal(v any) ([]byte, error) {
-	var buffer bytes.Buffer
-	encoder := json.NewEncoder(&buffer)
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(v); err != nil {
-		return nil, err
-	}
-	return bytes.TrimSuffix(buffer.Bytes(), []byte("\n")), nil
 }

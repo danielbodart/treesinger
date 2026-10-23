@@ -1,9 +1,10 @@
 .git
-node_modules
-test
-treesinger
+dist
+/treesinger
 *.log
 README.md
 PLAN.md
 logo.png
+docs
+nix
 .github

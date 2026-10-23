@@ -13,13 +13,11 @@ import (
 // The fake keys `/oauth2/token` by `grant_type`, since it serves three grants;
 // every other endpoint by `METHOD /pathname`.
 const (
-	routeDeviceAuth     = "POST /oauth2/device/auth"
-	routeDeviceToken    = "POST /oauth2/token urn:ietf:params:oauth:grant-type:device_code"
-	routeRefresh        = "POST /oauth2/token refresh_token"
-	routeProfiles       = "GET /my-account/get-profiles"
-	routeNewSession     = "POST /game-session/new"
-	routeRefreshSession = "POST /game-session/refresh"
-	routeTerminate      = "DELETE /game-session"
+	routeDeviceAuth  = "POST /oauth2/device/auth"
+	routeDeviceToken = "POST /oauth2/token urn:ietf:params:oauth:grant-type:device_code"
+	routeRefresh     = "POST /oauth2/token refresh_token"
+	routeProfiles    = "GET /my-account/get-profiles"
+	routeNewSession  = "POST /game-session/new"
 )
 
 type scripted struct {

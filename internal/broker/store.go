@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,11 +13,11 @@ import (
 // StoredTokens is the persisted credential set. RefreshToken is the one
 // long-lived secret: it rotates on every OAuth refresh (old one invalidated),
 // so it MUST be written back before any refreshed token is handed out.
-// AccessToken is a cache; AccessExpiresAt is epoch milliseconds.
+// AccessToken is a cache; AccessExpiresAt is epoch milliseconds, 0 for none.
 type StoredTokens struct {
 	RefreshToken    string `json:"refresh_token"`
 	AccessToken     string `json:"access_token,omitempty"`
-	AccessExpiresAt *int64 `json:"access_expires_at,omitempty"`
+	AccessExpiresAt int64  `json:"access_expires_at,omitempty"`
 }
 
 type TokenStore interface {
@@ -53,58 +52,18 @@ func (s *FileTokenStore) Read() (*StoredTokens, error) {
 	if err != nil {
 		return nil, err
 	}
-	tokens, err := decodeStoredTokens(data)
-	if err != nil {
+	var tokens StoredTokens
+	if err := json.Unmarshal(data, &tokens); err != nil {
 		return nil, fmt.Errorf("%s: %w", s.path, err)
 	}
-	return tokens, nil
-}
-
-// decodeStoredTokens reads the token file as the TypeScript's JSON.parse does,
-// since the two share the file across the migration. Only a file that is not
-// JSON is an error; a field of an unexpected type is read the way JavaScript
-// would use it, so a fractional, exponent or string `access_expires_at` is
-// still a time, and an unusable one leaves the token to be refreshed rather
-// than failing every call. A document that is false-y (null, 0, "") is no
-// login; any other non-object (an array) is a login with no refresh token.
-func decodeStoredTokens(data []byte) (*StoredTokens, error) {
-	var value any
-	if err := json.Unmarshal(data, &value); err != nil {
-		return nil, err
-	}
-	if isFalsy(data) {
-		return nil, nil
-	}
-	object, _ := jsonObject(data)
-	tokens := &StoredTokens{
-		RefreshToken: jsonText(object["refresh_token"]),
-		AccessToken:  jsonText(object["access_token"]),
-	}
-	if present(object["access_expires_at"]) {
-		tokens.AccessExpiresAt = millisAt(jsonNumber(object["access_expires_at"]))
-	}
-	return tokens, nil
-}
-
-// millisAt is an epoch-millisecond expiry as stored, from a JavaScript
-// number: rounded up, which compares against a whole-millisecond clock exactly
-// as the fraction would, and none at all for NaN, which compares false (stale)
-// with everything.
-func millisAt(ms float64) *int64 {
-	if math.IsNaN(ms) {
-		return nil
-	}
-	// Clamped well inside int64, so subtracting the skew cannot wrap.
-	const limit = 1 << 62
-	at := int64(math.Max(-limit, math.Min(limit, math.Ceil(ms))))
-	return &at
+	return &tokens, nil
 }
 
 func (s *FileTokenStore) Write(tokens StoredTokens) error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return err
 	}
-	data, err := marshal(tokens)
+	data, err := json.Marshal(tokens)
 	if err != nil {
 		return err
 	}
@@ -127,30 +86,27 @@ type MemoryTokenStore struct {
 }
 
 func NewMemoryTokenStore(seed *StoredTokens) *MemoryTokenStore {
-	return &MemoryTokenStore{tokens: seed.copy()}
+	return &MemoryTokenStore{tokens: copyOf(seed)}
 }
 
 func (s *MemoryTokenStore) Read() (*StoredTokens, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.tokens.copy(), nil
+	return copyOf(s.tokens), nil
 }
 
 func (s *MemoryTokenStore) Write(tokens StoredTokens) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.tokens = tokens.copy()
+	s.tokens = &tokens
 	return nil
 }
 
-func (t *StoredTokens) copy() *StoredTokens {
-	if t == nil {
+// copyOf is a copy of tokens, so a caller never holds the stored value.
+func copyOf(tokens *StoredTokens) *StoredTokens {
+	if tokens == nil {
 		return nil
 	}
-	copied := *t
-	if t.AccessExpiresAt != nil {
-		at := *t.AccessExpiresAt
-		copied.AccessExpiresAt = &at
-	}
+	copied := *tokens
 	return &copied
 }

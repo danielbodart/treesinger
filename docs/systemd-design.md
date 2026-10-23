@@ -5,6 +5,26 @@
 > `contrib/`, the README sections, and a VM test of the module and of the plain
 > unit (`nix flake check` green on x86_64-linux). Where building found reality
 > different from the design, this document has been corrected.
+>
+> **Since then, the broker has been rewritten in Go**, which changes the parts
+> of this design that were about Bun. They are kept below as the record of why
+> it was built that way; what is true now:
+>
+> - **Readiness** is a datagram the broker sends to `NOTIFY_SOCKET` itself, not
+>   a `systemd-notify` child, so the unit has `NotifyAccess=main`, and nothing
+>   needs `systemd-notify` on `PATH`.
+> - **No JIT**, so the sandbox has `MemoryDenyWriteExecute=yes`.
+>   `~@resources` stays out of the system call filter: the Go runtime raises
+>   its open-file limit with `setrlimit` as it starts.
+> - **Socket activation is now possible** - Go serves on an inherited fd with
+>   `net.FileListener` - but it is not built: the service still makes its own
+>   socket, with the contract described below.
+> - **The package** is `buildGoModule` with no vendored modules; there is no
+>   `node_modules` derivation, bundle or wrapper, and no `.env`/`bunfig.toml`
+>   for a binary to pick up. Its check phase is the tests.
+> - **The code** is `main.go` and `internal/broker/` (`serve.go` for the
+>   listeners, readiness and `health`), with the tests beside it; `./run`
+>   replaces `run.ts`.
 
 Treesinger today is a Docker image: one container, a volume holding
 `tokens.json`, reached by name over a compose network on TCP `:8080`. This
@@ -88,7 +108,9 @@ In code: `listen(config, fetch)` opens the listeners, `start(c, notify, env)`
 adds readiness and the log line (both tested directly), and `serve(c)` is
 `start` plus the signal handlers and a promise that never resolves.
 
-### Socket activation — investigated, not possible
+### Socket activation — investigated, not possible in Bun
+
+(Possible in Go, which the broker is now written in; not built yet.)
 
 Bun (1.3.13 / 1.3.14, measured under `systemd-socket-activate`) **cannot serve
 on an inherited fd**:
@@ -279,7 +301,7 @@ After=network-online.target
 
 [Service]
 Type=notify
-NotifyAccess=all
+NotifyAccess=main                  # all when Bun spawned systemd-notify
 ExecStart=<treesinger-serve>          # exports the bearer credential if any, then execs treesinger serve
 Environment=TREESINGER_STORE=<stateDir>/tokens.json TREESINGER_SOCKET=<socket> …
 User=<user>
@@ -315,10 +337,10 @@ RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 LockPersonality=yes
-MemoryDenyWriteExecute=no          # JavaScriptCore JITs
+MemoryDenyWriteExecute=yes         # no JIT since the Go port (Bun needed no)
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
-SystemCallFilter=~@privileged       # not @resources: bun 1.3 sched_setscheduler()s its threads
+SystemCallFilter=~@privileged       # not @resources: Go setrlimit()s at start (and bun 1.3 sched_setscheduler()d)
 CapabilityBoundingSet=
 AmbientCapabilities=
 LoadCredential=bearer-token:<bearerTokenFile>   # only when set
@@ -342,7 +364,8 @@ stack with all of them, `ProcSubset=pid` and `PrivateUsers=yes` included.
 of `SIGSYS` at start — it calls `sched_setscheduler` (in `@resources`) on its
 threads; unstable's 1.4.2 does not, so only the 26.05 run caught it.
 `systemd-analyze security` scores it **1.4** ("OK"); the test asserts ≤ 1.5. What is left exposed is what it needs: `AF_INET` for
-Hypixel, `AF_UNIX`, W+X memory for the JIT, `NotifyAccess=all`.
+Hypixel, `AF_UNIX`, W+X memory for the JIT, `NotifyAccess=all`. (The Go
+broker needs neither of the last two.)
 
 ### Why a fixed user, not `DynamicUser`
 

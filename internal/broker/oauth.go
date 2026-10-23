@@ -2,10 +2,7 @@ package broker
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -23,42 +20,19 @@ const (
 )
 
 type DeviceAuth struct {
-	DeviceCode              string  `json:"device_code"`
-	UserCode                string  `json:"user_code"`
-	VerificationURI         string  `json:"verification_uri"`
-	VerificationURIComplete string  `json:"verification_uri_complete"`
-	ExpiresIn               float64 `json:"expires_in"`
-	Interval                float64 `json:"interval"`
+	DeviceCode              string `json:"device_code"`
+	UserCode                string `json:"user_code"`
+	VerificationURI         string `json:"verification_uri"`
+	VerificationURIComplete string `json:"verification_uri_complete"`
+	ExpiresIn               int    `json:"expires_in"`
+	// Seconds to wait between polls.
+	Interval int `json:"interval"`
 }
 
 type tokenResponse struct {
-	AccessToken  string  `json:"access_token"`
-	TokenType    string  `json:"token_type"`
-	ExpiresIn    float64 `json:"expires_in"`
-	RefreshToken string  `json:"refresh_token"`
-	Scope        string  `json:"scope"`
-}
-
-// UnmarshalJSON reads a token response as the TypeScript's unchecked cast
-// does, never failing on a field's type: a refresh that upstream has already
-// spent must always get its rotated token persisted. Keys match exactly;
-// `expires_in` coerces as `expires_in * 1000` does (a numeric string counts,
-// a missing one is NaN), and a token that is not a string is String() of it.
-// Only a body that is not an object at all, on which the TypeScript throws
-// too, is an error.
-func (t *tokenResponse) UnmarshalJSON(data []byte) error {
-	object, isObject := jsonObject(data)
-	if !isObject {
-		return errors.New("token response is not a JSON object")
-	}
-	*t = tokenResponse{
-		AccessToken:  jsonText(object["access_token"]),
-		TokenType:    jsonText(object["token_type"]),
-		ExpiresIn:    jsonNumber(object["expires_in"]),
-		RefreshToken: jsonText(object["refresh_token"]),
-		Scope:        jsonText(object["scope"]),
-	}
-	return nil
+	AccessToken  string `json:"access_token"`
+	ExpiresIn    int64  `json:"expires_in"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 type OAuthDeps struct {
@@ -95,51 +69,43 @@ func NewOAuthClient(deps OAuthDeps) *OAuthClient { return &OAuthClient{OAuthDeps
 // UserCode.
 func (o *OAuthClient) DeviceAuth(ctx context.Context) (DeviceAuth, error) {
 	var auth DeviceAuth
-	response, err := o.post(ctx, tokenForm(deviceAuthURL, "client_id", clientID, "scope", scope))
+	response, err := o.post(ctx, deviceAuthURL, url.Values{"client_id": {clientID}, "scope": {scope}})
 	if err != nil {
 		return auth, err
 	}
-	return auth, ok(response, &auth)
+	return auth, decode(response, &auth)
 }
 
 // PollToken is §2: poll the token endpoint until the user approves, then
 // persist the resulting tokens (this is what `login` writes).
-// `authorization_pending` and `slow_down` continue the poll; any other error
-// aborts.
-//
-// Deviation, kept: with no `interval` in the device-auth response the
-// TypeScript polls every NaN seconds (a 1ms timer) forever, slow_down
-// included, since NaN + 5 is NaN. Here a missing interval is 0, and each
-// slow_down adds 5s to it, so polling backs off as RFC 8628 asks.
+// `authorization_pending` continues the poll and `slow_down` continues it 5s
+// further apart, as RFC 8628 asks; any other error aborts.
 func (o *OAuthClient) PollToken(ctx context.Context, deviceCode string, interval time.Duration) (StoredTokens, error) {
+	form := url.Values{"client_id": {clientID}, "grant_type": {deviceCodeGrant}, "device_code": {deviceCode}}
 	for {
 		o.Sleep(interval)
-		response, err := o.post(ctx, tokenForm(tokenURL, "client_id", clientID, "grant_type", deviceCodeGrant, "device_code", deviceCode))
+		response, err := o.post(ctx, tokenURL, form)
 		if err != nil {
 			return StoredTokens{}, err
 		}
 		if succeeded(response) {
 			var token tokenResponse
-			if err := ok(response, &token); err != nil {
+			if err := decode(response, &token); err != nil {
 				return StoredTokens{}, err
 			}
 			return o.persist(token)
 		}
-		data, _ := io.ReadAll(response.Body)
+		data, err := io.ReadAll(response.Body)
 		response.Body.Close()
-		value, found := errorField(data)
-		code, isString := jsonString(value)
-		switch {
-		case isString && code == "authorization_pending":
-			continue
-		case isString && code == "slow_down":
+		if err != nil {
+			return StoredTokens{}, err
+		}
+		switch code := errorCode(data); code {
+		case "authorization_pending":
+		case "slow_down":
 			interval += 5 * time.Second
-			continue
-		case found:
-			code = jsonText(value)
-			return StoredTokens{}, &UpstreamError{Status: response.StatusCode, Code: code, Value: value, Message: "device token poll failed: " + code}
 		default:
-			return StoredTokens{}, &UpstreamError{Status: response.StatusCode, Code: "unknown", Message: fmt.Sprintf("device token poll failed: %d", response.StatusCode)}
+			return StoredTokens{}, &UpstreamError{Status: response.StatusCode, Code: code, Message: "device token poll failed: " + code}
 		}
 	}
 }
@@ -156,7 +122,7 @@ func (o *OAuthClient) EnsureAccessToken(ctx context.Context) (string, error) {
 	if stored == nil {
 		return "", &UpstreamError{Status: 401, Code: "not_logged_in", Message: "no refresh token in store — run `treesinger login`"}
 	}
-	if stored.AccessToken != "" && o.isFresh(stored) {
+	if o.isFresh(stored) {
 		return stored.AccessToken, nil
 	}
 
@@ -201,11 +167,11 @@ func (o *OAuthClient) refresh(ctx context.Context) (string, error) {
 	// Double-check under the single-flight: a refresh that completed between
 	// the caller's cache read and here has already rotated + stored a fresh
 	// token; return it rather than spending the (now-invalidated) old one.
-	if stored.AccessToken != "" && o.isFresh(stored) {
+	if o.isFresh(stored) {
 		return stored.AccessToken, nil
 	}
 	o.Logger.Log("refreshing OAuth access token")
-	response, err := o.post(ctx, tokenForm(tokenURL, "client_id", clientID, "grant_type", "refresh_token", "refresh_token", stored.RefreshToken))
+	response, err := o.post(ctx, tokenURL, url.Values{"client_id": {clientID}, "grant_type": {"refresh_token"}, "refresh_token": {stored.RefreshToken}})
 	if err != nil {
 		return "", err
 	}
@@ -214,7 +180,7 @@ func (o *OAuthClient) refresh(ctx context.Context) (string, error) {
 		return "", &UpstreamError{Status: 401, Code: "invalid_grant", Message: "refresh token rejected — re-auth needed"}
 	}
 	var token tokenResponse
-	if err := ok(response, &token); err != nil {
+	if err := decode(response, &token); err != nil {
 		return "", err
 	}
 	// Some servers omit a rotated token; keep the existing one if so.
@@ -226,34 +192,28 @@ func (o *OAuthClient) refresh(ctx context.Context) (string, error) {
 }
 
 // persist computes expiry from expires_in and writes the store atomically.
-// An expiry that is not a finite number (which JSON.stringify writes as null)
-// is stored as none, so the token is refreshed on next use, as there.
 func (o *OAuthClient) persist(token tokenResponse) (StoredTokens, error) {
-	tokens := StoredTokens{RefreshToken: token.RefreshToken, AccessToken: token.AccessToken}
-	if expiresAt := float64(o.Clock.Now().UnixMilli()) + token.ExpiresIn*1000; !math.IsInf(expiresAt, 0) {
-		tokens.AccessExpiresAt = millisAt(expiresAt)
+	tokens := StoredTokens{
+		RefreshToken:    token.RefreshToken,
+		AccessToken:     token.AccessToken,
+		AccessExpiresAt: o.Clock.Now().Add(time.Duration(token.ExpiresIn) * time.Second).UnixMilli(),
 	}
 	return tokens, o.Store.Write(tokens)
 }
 
-// isFresh is pure over clock + stored expiry: does the cached token clear the
-// skew window?
+// isFresh is pure over clock + stored expiry: is there a cached token, and
+// does it clear the skew window?
 func (o *OAuthClient) isFresh(stored *StoredTokens) bool {
-	return stored.AccessExpiresAt != nil &&
-		o.Clock.Now().UnixMilli() < *stored.AccessExpiresAt-o.Config.Skew.Milliseconds()
+	return stored.AccessToken != "" &&
+		o.Clock.Now().Add(o.Config.Skew).UnixMilli() < stored.AccessExpiresAt
 }
 
-func (o *OAuthClient) post(ctx context.Context, form *http.Request) (*http.Response, error) {
-	return o.Client.Do(form.WithContext(ctx))
-}
-
-// tokenForm builds a form-encoded POST from name/value pairs, kept in order.
-func tokenForm(target string, pairs ...string) *http.Request {
-	fields := make([]string, 0, len(pairs)/2)
-	for i := 0; i+1 < len(pairs); i += 2 {
-		fields = append(fields, url.QueryEscape(pairs[i])+"="+url.QueryEscape(pairs[i+1]))
+// post sends a form-encoded POST.
+func (o *OAuthClient) post(ctx context.Context, target string, form url.Values) (*http.Response, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, err
 	}
-	request, _ := http.NewRequest(http.MethodPost, target, strings.NewReader(strings.Join(fields, "&")))
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	return request
+	return o.Client.Do(request)
 }

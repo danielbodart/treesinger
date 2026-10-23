@@ -19,8 +19,8 @@ import (
 // Logger.
 type silentLogger struct{}
 
-func (silentLogger) Log(...any)   {}
-func (silentLogger) Warn(...any)  {}
+func (silentLogger) Log(...any) {}
+
 func (silentLogger) Error(...any) {}
 
 // recordingLogger keeps every line, for the tests that assert on logging.
@@ -29,8 +29,8 @@ type recordingLogger struct {
 	lines []string
 }
 
-func (l *recordingLogger) Log(args ...any)   { l.record("log", args) }
-func (l *recordingLogger) Warn(args ...any)  { l.record("warn", args) }
+func (l *recordingLogger) Log(args ...any) { l.record("log", args) }
+
 func (l *recordingLogger) Error(args ...any) { l.record("error", args) }
 
 func (l *recordingLogger) record(level string, args []any) {
@@ -39,13 +39,12 @@ func (l *recordingLogger) record(level string, args []any) {
 	l.lines = append(l.lines, level+": "+strings.TrimSuffix(fmt.Sprintln(args...), "\n"))
 }
 
-func epochMillis(instant string) *int64 {
+func epochMillis(instant string) int64 {
 	t, err := time.Parse(time.RFC3339, instant)
 	if err != nil {
 		panic(err)
 	}
-	ms := t.UnixMilli()
-	return &ms
+	return t.UnixMilli()
 }
 
 func port(p int) *int { return &p }

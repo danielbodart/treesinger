@@ -1,3 +1,0 @@
-[test]
-# All tests are in-memory (fake upstream fetch + StoppedClock); no network.
-root = "test"

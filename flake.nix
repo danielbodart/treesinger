@@ -9,30 +9,14 @@
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f: lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
-      # run.ts's major.commit-count.build, from what Nix knows: the count is
+      # ./run's major.commit-count.build, from what Nix knows: the count is
       # there for a clean git checkout, a fetch by tarball (github:) has only the
       # revision, and a dirty tree has neither, so says so.
-      major = lib.versions.major (lib.importJSON ./package.json).version;
+      major = lib.fileContents ./MAJOR;
       version =
         if self ? revCount then "${major}.${toString self.revCount}.0"
         else if self ? shortRev then "${major}.0.0-${self.shortRev}"
         else "development";
-
-      # The package's build with the tests beside the source, running one
-      # run.ts command in place of the bundle.
-      runCheck = treesinger: name: command: treesinger.overrideAttrs {
-        pname = "treesinger-${name}";
-        src = lib.fileset.toSource {
-          root = ./.;
-          fileset = lib.fileset.unions [ ./package.json ./bun.lock ./bunfig.toml ./tsconfig.json ./src ./run.ts ./test ];
-        };
-        buildPhase = ''
-          runHook preBuild
-          bun run.ts ${command}
-          runHook postBuild
-        '';
-        installPhase = "touch $out";
-      };
     in
     {
       overlays.default = final: prev: {
@@ -60,9 +44,8 @@
       checks = forAllSystems (pkgs:
         let treesinger = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
         in {
+          # Its check phase is `go test`, so building it runs the tests.
           package = treesinger;
-          typecheck = runCheck treesinger "typecheck" "check";
-          test = runCheck treesinger "test" "test";
           treesinger-env = self.packages.${pkgs.stdenv.hostPlatform.system}.treesinger-env;
         } // lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
           nixos = import ./nix/test.nix {
@@ -73,7 +56,7 @@
         });
 
       devShells = forAllSystems (pkgs: {
-        default = pkgs.mkShellNoCC { packages = [ pkgs.bun ]; };
+        default = pkgs.mkShellNoCC { packages = [ pkgs.go_1_27 ]; };
       });
     };
 }

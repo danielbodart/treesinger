@@ -1,8 +1,11 @@
 package broker
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -34,6 +37,18 @@ func TestMintSession(t *testing.T) {
 		res := serve(h.c.App, http.MethodPost, brokerSession, "{uuid:")
 		assertEqual(t, res.Code, 400)
 		assertJSON(t, res.Body.String(), `{"error":"bad_request"}`)
+	})
+
+	t.Run("a uuid that is not a string is a 400", func(t *testing.T) {
+		h := newHarness(t, options{seed: validSeed()})
+		res := serve(h.c.App, http.MethodPost, brokerSession, `{"uuid":5}`)
+		assertEqual(t, res.Code, 400)
+	})
+
+	t.Run("an oversized body is refused with 413, not buffered", func(t *testing.T) {
+		h := newHarness(t, options{seed: validSeed()})
+		res := serve(h.c.App, http.MethodPost, brokerSession, strings.Repeat(" ", maxBodyBytes+1))
+		assertEqual(t, res.Code, 413)
 	})
 
 	t.Run("a whitespace body falls back to the default profile", func(t *testing.T) {
@@ -88,4 +103,22 @@ func TestOptionalBearerGate(t *testing.T) {
 		res := serve(h.c.App, http.MethodPost, brokerSession, string(body), "Authorization", "Bearer s3cret")
 		assertEqual(t, res.Code, 200)
 	})
+}
+
+func TestMintAbandonedByItsClientLogsNoFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	logger := &recordingLogger{}
+	h := newHarness(t, options{seed: validSeed(), config: func(c *Config) { c.OwnerUUID = "x" }})
+	h.c.Logger = logger
+	h.c.Transport = RoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		cancel() // the client goes away while upstream is being asked
+		return nil, r.Context().Err()
+	})
+	if err := h.c.Wire(); err != nil {
+		t.Fatal(err)
+	}
+
+	h.c.App.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, brokerSession, nil).WithContext(ctx))
+
+	assertEqual(t, len(logger.lines), 0)
 }

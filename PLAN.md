@@ -1,7 +1,10 @@
 # Treesinger — build plan
 
-> **Status:** greenfield. This file is the complete build spec. Read it end to
-> end before writing code. Nothing else exists in the repo yet.
+> **Status:** built, first in Bun and TypeScript as this plan specifies, and
+> since rewritten in Go (`main.go`, `internal/broker/`). The design here stands;
+> where it names Bun, `fetch`, yadic or `.ts` files, read Go, `http.RoundTripper`
+> / `http.Handler`, the `Container` struct and `internal/broker/*.go`. The
+> workflow is `.github/workflows/ci.yml`.
 
 ## What it is
 
@@ -237,7 +240,7 @@ src/
 test/
   fixtures/       recorded real request/response JSON for the fake upstream fetch
   *.test.ts       bun test
-mise.toml  bunfig.toml  tsconfig.json  Dockerfile  .github/workflows/release.yml  README.md  LICENSE
+mise.toml  bunfig.toml  tsconfig.json  Dockerfile  .github/workflows/ci.yml  README.md  LICENSE
 ```
 
 ## Testing

@@ -6,8 +6,10 @@ that group is what lets a server mint a session. There is no TCP listener
 unless you set `TREESINGER_PORT` as well. The unit is `Type=notify`, so anything
 ordered `After=treesinger.service` finds the socket already there.
 
-There is no `treesinger.socket` unit: Bun cannot serve on a socket handed
-over by systemd, so the service makes its own, in its runtime directory.
+There is no `treesinger.socket` unit: the service makes its own socket, in its
+runtime directory. (The broker was first written in Bun, which could not serve
+on a socket handed over by systemd. Go can, so socket activation is now
+possible, but it is not built.)
 
 There are two ways to install it: the [NixOS module](#nixos), which is the whole
 setup in a few lines of configuration, or the [release binary and

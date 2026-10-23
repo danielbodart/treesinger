@@ -194,3 +194,22 @@ func TestLogging(t *testing.T) {
 		assertEqual(t, strings.HasPrefix(logger.lines[0], "log: GET https://account-data.hytale.com/my-account/get-profiles → 200 ("), true)
 	})
 }
+
+func TestIdentifying(t *testing.T) {
+	var seen []string
+	inner := RoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		seen = append(seen, r.Header.Get("User-Agent"))
+		return &http.Response{StatusCode: 200, Body: http.NoBody, Request: r}, nil
+	})
+	transport := Identifying("1.2.3")(inner)
+
+	plain, _ := http.NewRequest(http.MethodGet, "https://upstream.example/", nil)
+	transport.RoundTrip(plain)
+	named, _ := http.NewRequest(http.MethodGet, "https://upstream.example/", nil)
+	named.Header.Set("User-Agent", "someone-else")
+	transport.RoundTrip(named)
+
+	assertEqual(t, seen[0], "treesinger/1.2.3")
+	assertEqual(t, seen[1], "someone-else")            // a request's own is left alone
+	assertEqual(t, plain.Header.Get("User-Agent"), "") // and the caller's request is not changed
+}

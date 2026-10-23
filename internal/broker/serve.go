@@ -35,9 +35,9 @@ func (l *Listening) Stop() {
 	}
 }
 
-// idleTimeout is Bun.serve's default idleTimeout: a connection that sends
-// nothing for this long, before its request or between requests, is closed,
-// so idle and slow-loris clients cannot hold descriptors open indefinitely.
+// idleTimeout closes a connection that sends nothing for this long, before its
+// request or between requests, so idle and slow-loris clients cannot hold
+// descriptors open indefinitely. http.Server has no timeouts by default.
 const idleTimeout = 10 * time.Second
 
 func (l *Listening) serve(listener net.Listener, handler http.Handler) {

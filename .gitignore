@@ -1,6 +1,7 @@
-node_modules/
 dist/
-treesinger
+# `go build` with no -o, at the root only: a bare `treesinger` would also
+# ignore any directory of that name.
+/treesinger
 *.log
 .env
 # Local token store, if a dev points it into the repo.

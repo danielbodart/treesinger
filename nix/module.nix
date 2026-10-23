@@ -46,17 +46,16 @@ let
     ProtectHostname = true;
     ProtectProc = "invisible";
     ProcSubset = "pid";
-    # unix for the socket and systemd-notify; inet for HTTPS to Hypixel.
+    # unix for the socket and the readiness datagram; inet for HTTPS to Hypixel.
     RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
     RestrictNamespaces = true;
     RestrictRealtime = true;
     RestrictSUIDSGID = true;
     LockPersonality = true;
-    # JavaScriptCore compiles JIT code into writable, executable memory.
-    MemoryDenyWriteExecute = false;
+    MemoryDenyWriteExecute = true;
     SystemCallArchitectures = "native";
-    # Not ~@resources: bun 1.3 calls sched_setscheduler on its threads, and
-    # dies of SIGSYS without it (1.4 does not).
+    # Not ~@resources: the Go runtime raises its open-file limit (setrlimit)
+    # as it starts, and a filtered call is SIGSYS.
     SystemCallFilter = [ "@system-service" "~@privileged" ];
     CapabilityBoundingSet = "";
     AmbientCapabilities = "";
@@ -244,14 +243,13 @@ in
       # wait until Hypixel can be reached, and so make them wait too.
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
-      # systemd-notify comes from the default path, which includes systemd.
       environment = environment // listeners;
 
       serviceConfig = sandbox // {
-        # Ready once every listener is bound; the notification comes from a
-        # child (systemd-notify), hence NotifyAccess=all.
+        # Ready once every listener is bound. The broker sends the notification
+        # itself, and the serve script execs it, so it is the main process.
         Type = "notify";
-        NotifyAccess = "all";
+        NotifyAccess = "main";
         ExecStart = serve;
         Restart = "on-failure";
         RestartSec = "5s";

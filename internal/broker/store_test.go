@@ -23,8 +23,7 @@ func TestFileTokenStore(t *testing.T) {
 
 	t.Run("round-trips tokens, owner-only, with no temp file left behind", func(t *testing.T) {
 		store, dir := storeAt(t)
-		at := int64(123)
-		written := StoredTokens{RefreshToken: "rt", AccessToken: "at", AccessExpiresAt: &at}
+		written := StoredTokens{RefreshToken: "rt", AccessToken: "at", AccessExpiresAt: 123}
 		if err := store.Write(written); err != nil {
 			t.Fatal(err)
 		}

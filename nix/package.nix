@@ -1,62 +1,33 @@
-# The broker: src/ bundled by bun into one JS file, run by nixpkgs' bun.
-# A bundle rather than `bun build --compile`, whose executable is a copy of
-# bun with the JS appended, which the fixup phase's strip and patchelf can
-# mangle; the runtime closure is the same bun either way, and the bundle needs
-# no node_modules once built.
-{ lib, stdenvNoCC, bun, makeWrapper, callPackage, version ? "development" }:
+# The broker: the same static build as ./run, by nixpkgs' Go. go.mod requires
+# nothing, so there are no modules to vendor (vendorHash = null), and the
+# check phase runs the tests on the way.
+# buildGo127Module rather than buildGoModule, which is still Go 1.26 in the
+# pinned nixpkgs and would refuse go.mod's `go 1.27`.
+{ lib, buildGo127Module, version ? "development" }:
 
-let
-  nodeModules = callPackage ./node-modules.nix { };
-in
-stdenvNoCC.mkDerivation (finalAttrs: {
+buildGo127Module {
   pname = "treesinger";
   inherit version;
 
+  # go.mod and every .go file, tests included, and the tests' recorded
+  # upstream bodies; so editing the docs or the flake does not rebuild it.
   src = lib.fileset.toSource {
     root = ../.;
     fileset = lib.fileset.unions [
-      ../package.json
-      ../bun.lock
-      ../bunfig.toml
-      ../tsconfig.json
-      ../src
+      ../go.mod
+      (lib.fileset.fileFilter (file: file.hasExt "go") ../.)
+      ../internal/broker/testdata
     ];
   };
 
-  nativeBuildInputs = [ bun makeWrapper ];
+  vendorHash = null;
 
-  configurePhase = ''
-    runHook preConfigure
-    # Copied, not linked: bun resolves through a real tree.
-    cp -R ${nodeModules}/node_modules .
-    chmod -R u+w node_modules
-    export HOME=$TMPDIR
-    runHook postConfigure
-  '';
-
-  buildPhase = ''
-    runHook preBuild
-    # The sourcemap is not optional: without it bun shows a logged error's
-    # source context from the minified bundle, a screenful of one line. (And
-    # --outdir, as with a sourcemap bun puts an --outfile beside the entry.)
-    bun build --target=bun --minify --sourcemap=linked --define 'TREESINGER_VERSION="${finalAttrs.version}"' \
-      --entry-naming='treesinger.[ext]' src/main.ts --outdir dist
-    runHook postBuild
-  '';
-
-  installPhase = ''
-    runHook preInstall
-    install -Dm444 -t $out/lib/treesinger dist/treesinger.js dist/treesinger.js.map
-    # --no-env-file and an empty config: bun would otherwise read a .env and
-    # bunfig.toml from whatever directory treesinger is run in.
-    makeWrapper ${lib.getExe bun} $out/bin/treesinger \
-      --add-flags "--no-env-file --config=/dev/null $out/lib/treesinger/treesinger.js"
-    runHook postInstall
-  '';
-
-  passthru = {
-    inherit nodeModules;
-  };
+  env.CGO_ENABLED = 0;
+  ldflags = [
+    "-s"
+    "-w"
+    "-X github.com/danielbodart/treesinger/internal/broker.Version=${version}"
+  ];
 
   meta = {
     description = "Central authentication broker for Hytale dedicated servers";
@@ -65,4 +36,4 @@ stdenvNoCC.mkDerivation (finalAttrs: {
     mainProgram = "treesinger";
     platforms = [ "x86_64-linux" "aarch64-linux" ];
   };
-})
+}

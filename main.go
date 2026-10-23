@@ -10,7 +10,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"time"
 
@@ -70,20 +69,12 @@ func login(c *broker.Container) error {
 	if err != nil {
 		return err
 	}
-	prompt(os.Stdout, auth)
-	interval := time.Duration(auth.Interval * float64(time.Second))
-	if _, err := c.OAuth.PollToken(ctx, auth.DeviceCode, interval); err != nil {
+	fmt.Printf("\nTo authorise Treesinger, visit:\n\n  %s\n", auth.VerificationURIComplete)
+	fmt.Printf("\nor go to %s and enter code: %s\n\n", auth.VerificationURI, auth.UserCode)
+	fmt.Println("Waiting for approval…")
+	if _, err := c.OAuth.PollToken(ctx, auth.DeviceCode, time.Duration(auth.Interval)*time.Second); err != nil {
 		return err
 	}
 	fmt.Println("✓ Logged in. Refresh token stored. You can now `treesinger serve`.")
 	return nil
-}
-
-// prompt tells the user where to approve the login. Each line is what one
-// console.log of the TypeScript prints: its text, then a newline.
-func prompt(w io.Writer, auth broker.DeviceAuth) {
-	fmt.Fprint(w, "\nTo authorise Treesinger, visit:\n\n")
-	fmt.Fprintf(w, "  %s\n", auth.VerificationURIComplete)
-	fmt.Fprintf(w, "\nor go to %s and enter code: %s\n\n", auth.VerificationURI, auth.UserCode)
-	fmt.Fprintln(w, "Waiting for approval…")
 }

@@ -28,11 +28,33 @@ let
   '';
 
   # Stands in for a logged-in broker, to see treesinger-env's success path.
-  fakeBroker = pkgs.writeText "fake-broker.ts" ''
-    Bun.serve({
-      unix: "/run/fake-broker.sock",
-      fetch: () => Response.json({ sessionToken: "st", identityToken: "it", expiresAt: "2100-01-01T00:00:00Z" }),
-    });
+  fakeBroker = pkgs.writers.writePython3 "fake-broker" { } ''
+    import http.server
+    import json
+    import socketserver
+
+    BODY = json.dumps({
+        "sessionToken": "st",
+        "identityToken": "it",
+        "expiresAt": "2100-01-01T00:00:00Z",
+    }).encode()
+
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(BODY)))
+            self.end_headers()
+            self.wfile.write(BODY)
+
+        # A unix socket's peer has no address to log.
+        def log_message(self, *args):
+            pass
+
+
+    socketserver.UnixStreamServer("/run/fake-broker.sock", Handler).serve_forever()
   '';
 
   curlSocket = "curl -sS --unix-socket /run/treesinger/treesinger.sock";
@@ -164,7 +186,7 @@ pkgs.testers.runNixOSTest {
         defaults.wait_for_unit("treesinger.service")
 
     with subtest("defaults: treesinger-env passes a minted session on"):
-        defaults.succeed("systemd-run --unit=fake-broker ${pkgs.lib.getExe pkgs.bun} ${fakeBroker}")
+        defaults.succeed("systemd-run --unit=fake-broker ${fakeBroker}")
         defaults.wait_for_file("/run/fake-broker.sock")
         out = defaults.succeed("treesinger-env --socket /run/fake-broker.sock -- sh -c 'echo $HYTALE_SERVER_SESSION_TOKEN $HYTALE_SERVER_IDENTITY_TOKEN'")
         assert out.strip() == "st it", out
