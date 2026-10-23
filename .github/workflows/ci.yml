@@ -91,7 +91,7 @@ jobs:
       - name: Verify the systemd unit
         run: |
           sudo install -m 755 dist/release/treesinger-linux-x64 /usr/local/bin/treesinger
-          sudo systemd-sysusers contrib/systemd/treesinger.sysusers
+          sudo systemd-sysusers "$PWD/contrib/systemd/treesinger.sysusers"
           systemd-analyze verify contrib/systemd/treesinger.service
 
       # A re-run has the same run number and so the same version; the action
