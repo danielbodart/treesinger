@@ -21,7 +21,6 @@
     {
       overlays.default = final: prev: {
         treesinger = final.callPackage ./nix/package.nix { inherit version; };
-        treesinger-env = final.callPackage ./nix/treesinger-env.nix { };
       };
 
       packages = forAllSystems (pkgs:
@@ -29,7 +28,6 @@
         in {
           inherit treesinger;
           default = treesinger;
-          treesinger-env = pkgs.callPackage ./nix/treesinger-env.nix { };
         });
 
       # services.treesinger, with this flake's package unless one is given
@@ -46,11 +44,9 @@
         in {
           # Its check phase is `go test`, so building it runs the tests.
           package = treesinger;
-          treesinger-env = self.packages.${pkgs.stdenv.hostPlatform.system}.treesinger-env;
         } // lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
           nixos = import ./nix/test.nix {
             inherit pkgs treesinger;
-            inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) treesinger-env;
             module = self.nixosModules.default;
           };
         });

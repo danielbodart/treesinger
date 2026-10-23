@@ -59,10 +59,10 @@ build() {
 }
 
 # What a GitHub release carries: a binary per architecture, the plain systemd
-# unit and sysusers file that run it, the client helper, and their checksums,
-# all in one directory for CI to upload as they are. The names are what
-# releases/latest/download links point at, so they stay put; x64 is Go's
-# amd64.
+# units that run it (the service and its two sockets), the sysusers file, and
+# their checksums, all in one directory for CI to upload as they are. The
+# names are what releases/latest/download links point at, so they stay put;
+# x64 is Go's amd64.
 release() {
   dir=${1:-dist/release}
   v=$(version)
@@ -70,8 +70,10 @@ release() {
   mkdir -p "$dir"
   compile "$v" amd64 "$dir/treesinger-linux-x64"
   compile "$v" arm64 "$dir/treesinger-linux-arm64"
-  cp contrib/systemd/treesinger.service contrib/systemd/treesinger.sysusers contrib/treesinger-env "$dir/"
-  (cd "$dir" && sha256sum treesinger-linux-x64 treesinger-linux-arm64 treesinger.service treesinger.sysusers treesinger-env > SHA256SUMS)
+  units="treesinger.service treesinger.socket treesinger-admin.socket treesinger.sysusers"
+  for f in $units; do cp "contrib/systemd/$f" "$dir/"; done
+  # shellcheck disable=SC2086 # $units is a list of plain names
+  (cd "$dir" && sha256sum treesinger-linux-x64 treesinger-linux-arm64 $units > SHA256SUMS)
   echo "built $dir $v"
 }
 

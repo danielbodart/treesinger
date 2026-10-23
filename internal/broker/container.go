@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"context"
 	"net/http"
 	"time"
 )
@@ -14,7 +15,7 @@ type Container struct {
 	Config    *Config
 	Clock     Clock
 	Logger    Logger
-	Sleep     func(time.Duration)
+	Sleep     func(ctx context.Context, d time.Duration) error
 	Store     TokenStore
 	Transport http.RoundTripper
 	// The upstream retry policy; its backoff is a real timer unless a test
@@ -24,6 +25,8 @@ type Container struct {
 	OAuth    *OAuthClient
 	Sessions *SessionClient
 	App      http.Handler
+	// Served only on the socket systemd passes as "admin"; see Admin.
+	Admin http.Handler
 }
 
 // Wire fills in the leaves left unset and derives the rest from them.
@@ -42,7 +45,7 @@ func (c *Container) Wire() error {
 		c.Logger = ConsoleLogger()
 	}
 	if c.Sleep == nil {
-		c.Sleep = time.Sleep
+		c.Sleep = delay
 	}
 	if c.Store == nil {
 		c.Store = NewFileTokenStore(c.Config.StorePath)
@@ -60,6 +63,7 @@ func (c *Container) Wire() error {
 	c.OAuth = NewOAuthClient(OAuthDeps{Client: client, Clock: c.Clock, Store: c.Store, Logger: c.Logger, Config: c.Config, Sleep: c.Sleep})
 	c.Sessions = NewSessionClient(SessionDeps{Client: client, Clock: c.Clock, OAuth: c.OAuth, Config: c.Config})
 	c.App = &App{Sessions: c.Sessions, OAuth: c.OAuth, Logger: c.Logger}
+	c.Admin = &Admin{OAuth: c.OAuth, Sessions: c.Sessions, Logger: c.Logger}
 	// Optional hardening: gate /v1/session behind a bearer token when configured.
 	if c.Config.BearerToken != "" {
 		c.App = BearerGate(c.Config.BearerToken, c.App)

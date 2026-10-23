@@ -1,0 +1,18 @@
+# /etc/systemd/system/treesinger-admin.socket: the broker's admin socket, for
+# `sudo treesinger login`, which runs the device login through the running
+# broker, so the token lands in its store with its owner and mode. Root only,
+# and outside /run/treesinger on purpose: that directory is bind-mounted into
+# confined game servers, and nothing in it should be able to log the broker in.
+[Unit]
+Description=Treesinger: Hytale server authentication broker (admin socket)
+
+[Socket]
+ListenStream=/run/treesinger-admin.sock
+SocketMode=0600
+# The name the broker knows it by: only a listener named admin serves the
+# admin endpoints, and they are never served anywhere else.
+FileDescriptorName=admin
+Service=treesinger.service
+
+[Install]
+WantedBy=sockets.target

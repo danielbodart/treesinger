@@ -1,30 +1,42 @@
 # Treesinger on systemd — design
 
 > **Status:** built on the `systemd` branch: the listeners, readiness and
-> `health` in the app, the flake (package, `treesinger-env`, module, checks),
-> `contrib/`, the README sections, and a VM test of the module and of the plain
-> unit (`nix flake check` green on x86_64-linux). Where building found reality
-> different from the design, this document has been corrected.
+> `health` in the app, the flake (package, module, checks), `contrib/`, the
+> README sections, and a VM test of the module and of the plain units (`nix
+> flake check` green on x86_64-linux). Where building found reality different
+> from the design, this document has been corrected.
 >
 > **Since then, the broker has been rewritten in Go**, which changes the parts
 > of this design that were about Bun. They are kept below as the record of why
 > it was built that way; what is true now:
 >
+> - **Socket activation is built.** systemd holds the sockets
+>   (`treesinger.socket`, `treesinger-admin.socket`) and the broker serves the
+>   fds it is passed (`LISTEN_FDS`, read by hand with `net.FileListener`, no
+>   go-systemd). The broker no longer creates, chmods or unlinks a socket, and
+>   `TREESINGER_SOCKET` is gone. See [socket activation](#socket-activation).
+> - **Login goes through the broker**, over a root-only admin socket:
+>   `sudo treesinger login` replaces the module's `treesinger-login` wrapper.
+>   See [login](#login).
+> - **`treesinger exec`** replaces the `treesinger-env` shell script: Go can
+>   `execve`, which Bun could not. See [env injection](#hytale-servers-via-chandlery).
+> - **The bearer token** may be a systemd credential
+>   (`$CREDENTIALS_DIRECTORY/bearer-token`), so no wrapper script exports it.
+>   There are no wrapper scripts left at all.
 > - **Readiness** is a datagram the broker sends to `NOTIFY_SOCKET` itself, not
 >   a `systemd-notify` child, so the unit has `NotifyAccess=main`, and nothing
 >   needs `systemd-notify` on `PATH`.
 > - **No JIT**, so the sandbox has `MemoryDenyWriteExecute=yes`.
 >   `~@resources` stays out of the system call filter: the Go runtime raises
 >   its open-file limit with `setrlimit` as it starts.
-> - **Socket activation is now possible** - Go serves on an inherited fd with
->   `net.FileListener` - but it is not built: the service still makes its own
->   socket, with the contract described below.
 > - **The package** is `buildGoModule` with no vendored modules; there is no
 >   `node_modules` derivation, bundle or wrapper, and no `.env`/`bunfig.toml`
 >   for a binary to pick up. Its check phase is the tests.
 > - **The code** is `main.go` and `internal/broker/` (`serve.go` for the
 >   listeners, readiness and `health`), with the tests beside it; `./run`
 >   replaces `run.ts`.
+> - **CI** runs the VM test and `nix flake check` in a `nix` job (with KVM),
+>   which does not gate publishing.
 
 Treesinger today is a Docker image: one container, a volume holding
 `tokens.json`, reached by name over a compose network on TCP `:8080`. This
@@ -39,125 +51,123 @@ mint-on-request, `POST /v1/session` and `GET /health` unchanged.
 
 ### Listeners
 
-The broker listens on **any combination** of a unix socket and a TCP port:
+Where the broker listens depends on whether systemd passed it any:
 
-| Variable                   | Default                                    | Meaning |
-|----------------------------|--------------------------------------------|---------|
-| `TREESINGER_SOCKET`        | unset                                      | **New.** Listen on this unix socket path. |
-| `TREESINGER_PORT`          | `8080` if no socket is set, else unset     | Listen on this TCP port. Setting it alongside a socket listens on both. |
-| `TREESINGER_HOST`          | `0.0.0.0`                                  | **New.** Address the TCP listener binds (e.g. `127.0.0.1`). |
-| `TREESINGER_STORE`, `_SKEW_MS`, `_OWNER_UUID`, `_BEARER_TOKEN` | unchanged | unchanged |
+- **Socket-activated** (`LISTEN_PID` is the broker's pid and `LISTEN_FDS` > 0):
+  it serves **only** the passed fds, from fd 3, named by `LISTEN_FDNAMES`. An
+  fd named `admin` serves the [admin handler](#login); every other fd, unix or
+  TCP, serves the app (`POST /v1/session`, `GET /health`). The three variables
+  are unset once read, so nothing the broker might start inherits them.
+  `TREESINGER_PORT` or `TREESINGER_HOST` set as well is a startup error: the
+  listeners come from the socket units then, and a silently ignored port is a
+  misconfiguration nobody would notice.
+- **Otherwise** (Docker, a shell): TCP only, on
+  `TREESINGER_HOST:TREESINGER_PORT` (`0.0.0.0:8080` by default), byte-for-byte
+  as before. The admin handler is **never** served on a listener the broker
+  binds itself, nor on TCP.
 
-So: Docker (no socket set) behaves byte-for-byte as today, `:8080` on all
-addresses. A systemd unit sets `TREESINGER_SOCKET` and, unless it also sets
-`TREESINGER_PORT`, has no TCP listener at all — the socket's file permissions
-are the whole access boundary, the native equivalent of compose network
-isolation.
+| Variable                   | Default      | Meaning |
+|----------------------------|--------------|---------|
+| `TREESINGER_PORT`          | `8080`       | TCP port, when not socket-activated. |
+| `TREESINGER_HOST`          | `0.0.0.0`    | TCP bind address, when not socket-activated. |
+| `TREESINGER_BEARER_TOKEN`  | `$CREDENTIALS_DIRECTORY/bearer-token`, else unset | The shared secret for `/v1/session`, for `serve` and `exec`; the credential file's trailing newline is trimmed. |
+| `TREESINGER_STORE`, `_SKEW_MS`, `_OWNER_UUID` | unchanged | unchanged |
 
-`Config` becomes:
+`TREESINGER_SOCKET` is gone: the broker never creates a unix socket itself.
+Set, it is refused at startup, so a unit from an earlier release cannot run
+the new binary on TCP without its sockets (docs/systemd.md, Upgrade).
+Under systemd, the socket's file permissions are the whole access boundary,
+the native equivalent of compose network isolation; there is no TCP listener
+unless the socket unit has one.
 
-```ts
-interface Config {
-    storePath: string;
-    skewMs: number;
-    /** TCP port, or undefined for no TCP listener. */
-    port?: number;
-    /** TCP bind address. */
-    hostname: string;
-    /** Unix socket path, or undefined for none. */
-    socketPath?: string;
-    ownerUuid?: string;
-    bearerToken?: string;
-}
+### Socket activation
+
+Two socket units, both `WantedBy=sockets.target`, are what is enabled;
+`treesinger.service` has no `WantedBy` of its own (its `[Install]` has
+`Also=` the sockets, so `systemctl enable treesinger` enables them) and starts
+on the first connection to either:
+
+```ini
+# treesinger.socket
+[Socket]
+ListenStream=/run/treesinger/treesinger.sock
+SocketGroup=treesinger
+SocketMode=0660
+DirectoryMode=0755
+#ListenStream=127.0.0.1:8080        # TCP: the module's port/host, or a drop-in
+
+# treesinger-admin.socket
+[Socket]
+ListenStream=/run/treesinger-admin.sock
+SocketMode=0600
+FileDescriptorName=admin
+Service=treesinger.service
 ```
 
-`configFromEnv` resolves `port` as `TREESINGER_PORT` if set, else `8080` if no
-`TREESINGER_SOCKET`, else `undefined`. (`test/support/harness.ts`'s
-`baseConfig` gains `hostname`.)
+The service `Requires=` and is `After=` both. What this buys over the broker
+making its own socket (the Bun-era design below):
 
-### Socket semantics
+- **No window.** The socket exists from `sockets.target`, early in boot, and a
+  connection made before the broker is up, or while it restarts, waits in the
+  backlog instead of failing with `ENOENT`/`ECONNREFUSED`. The broker still
+  sends `READY=1` once serving, so `After=treesinger.service` keeps meaning
+  "serving" for clients that order on it.
+- **A stable inode.** systemd keeps the socket across restarts of the broker,
+  so a client may bind the socket file itself into its namespace, not just the
+  directory. Chandlery binds `/run/treesinger` and expects `treesinger.sock` in
+  it, which still holds: the directory now only ever holds that socket.
+- **No socket code.** No stale-socket probe and unlink, no `chmod`, no group
+  handling, no cleanup on exit, and no `RuntimeDirectory` (the broker writes
+  nothing under `/run`). The owner is root, the group `treesinger`, the mode
+  `0660`; the directory is `0755 root:root`, which only lets a client traverse
+  it.
+- **The admin socket is a separate unit**, root only (`0600`), outside
+  `/run/treesinger` on purpose: that directory is bind-mounted into confined
+  game servers, and nothing in one should be able to start a login. Its fd is
+  named `admin`, which is how the broker tells it apart; the client socket's
+  fds keep systemd's default name (the unit's).
 
-`serve` (in `src/serve.ts`) does, for the socket:
+The fds are parsed by hand (`os.NewFile` + `net.FileListener`); go-systemd
+would be the module's first dependency for a dozen lines.
 
-1. If something already exists at the path **and it is a socket nobody answers
-   on**, unlink it (a stale socket from a crash or a SIGKILL — Bun's default
-   SIGTERM exit leaves one too — kept by `RuntimeDirectoryPreserve`). Bun's
-   bind does not do this itself: it fails `EADDRINUSE`. A socket that *does*
-   answer (probed with a `connect()`) is another live broker, almost certainly
-   on the same store, which the single-writer design forbids — refuse to start
-   rather than steal it. Anything that is *not* a socket — refuse to start,
-   never delete a user's file.
-2. `Bun.serve({ unix: path, fetch: c.app })`.
-3. `chmod 0660` the socket. Bun binds with the process umask (measured: `0755`
-   under umask 022, which a non-owner cannot even `connect()` to), so the mode
-   is set explicitly rather than left to umask. The socket's **group is the
-   process's primary group** — that is the access-control group (see the
-   module's `group`).
+### Socket activation in Bun — investigated, not possible
 
-Then, once every listener is bound, readiness (below), then the log line
-(`serving on unix:/run/treesinger/treesinger.sock` and/or `http://host:port`).
-If a later listener or the notify fails, the ones already open are closed, so
-a failed start leaves no socket behind.
-
-On `SIGTERM`/`SIGINT` `serve` stops its listeners — `server.stop()` unlinks
-the socket — and exits `0`. So a cleanly stopped broker leaves no socket, and
-a client sees `ENOENT` rather than `ECONNREFUSED` (it treats both as "boot
-unauthenticated").
-
-In code: `listen(config, fetch)` opens the listeners, `start(c, notify, env)`
-adds readiness and the log line (both tested directly), and `serve(c)` is
-`start` plus the signal handlers and a promise that never resolves.
-
-### Socket activation — investigated, not possible in Bun
-
-(Possible in Go, which the broker is now written in; not built yet.)
-
-Bun (1.3.13 / 1.3.14, measured under `systemd-socket-activate`) **cannot serve
-on an inherited fd**:
-
-- `Bun.serve` has no `fd` option.
-- `Bun.listen({ fd: 3 })` throws `EINVAL: Bun does not support listening on a
-  file descriptor`.
-- `node:http` `server.listen({ fd: 3 })` is worse: it **silently ignores the fd
-  and binds a random TCP port on `::`** — an open listener nobody asked for.
-
-So there is no `treesinger.socket` unit and no `LISTEN_FDS` handling. The
-service creates its socket itself under `RuntimeDirectory=treesinger`. (If Bun
-gains fd listening, socket activation can be added without changing the
-contract: same path, same group, same mode.) The code must **not** fall back
-to `node:http` `listen({fd})` for the reason above.
+(The record of why the Bun broker made its own socket.) Bun (1.3.13 / 1.3.14,
+measured under `systemd-socket-activate`) **could not serve on an inherited
+fd**: `Bun.serve` has no `fd` option, `Bun.listen({ fd: 3 })` throws `EINVAL`,
+and `node:http` `server.listen({ fd: 3 })` silently ignored the fd and bound a
+random TCP port on `::`. So the Bun broker created its socket under
+`RuntimeDirectory=treesinger` with `RuntimeDirectoryPreserve=yes`, unlinked a
+stale one on start (refusing a live one, or anything not a socket), `chmod`ed
+it `0660` (Bun bound with the umask), and removed it on `SIGTERM`. Go serves
+an inherited fd with `net.FileListener`, so all of that is gone.
 
 ### Readiness: `Type=notify`
 
-With no socket unit, a client ordered `After=treesinger.service` could start
-in the window between `exec` and `bind`, find no socket, and boot its game
-unauthenticated. So the service is `Type=notify`: when `NOTIFY_SOCKET` is set,
-after every listener is bound, `serve` runs `systemd-notify --ready` (Bun has
-no `sd_notify` and cannot send to a unix datagram socket natively; spawning the
-helper is the portable way). Because the notification comes from a child, the
-unit needs `NotifyAccess=all`. Without `NOTIFY_SOCKET` (Docker, a shell)
-nothing is spawned. `systemd-notify` is looked up on `PATH` — the package does
-not pull systemd into its closure; a NixOS unit's default `path` has it, and a
-plain systemd host has it in `/usr/bin`. If it is missing or fails, `serve`
-closes its listeners and exits non-zero rather than sit unready until
-`TimeoutStartSec`.
+Once serving, the broker sends `READY=1` to `NOTIFY_SOCKET` itself
+(`NotifyAccess=main`). With socket activation a client no longer needs it to
+find the socket, but ordering `After=treesinger.service` still means the
+broker is serving and, through the broker's own `After=network-online.target`,
+that Hypixel can be reached. Without `NOTIFY_SOCKET` (Docker, a shell) nothing
+is sent. (The Bun broker had to spawn `systemd-notify --ready`, hence
+`NotifyAccess=all` then.)
 
-"Ready" means **listening**, not **logged in**: an unauthenticated broker is up
+"Ready" means **serving**, not **logged in**: an unauthenticated broker is up
 and answers `/health` with `503` and `/v1/session` with `401 not_logged_in`,
 which clients already treat as "boot unauthenticated".
 
 ### `treesinger health`
 
-Probes the socket if `TREESINGER_SOCKET` is set (Bun's `fetch(url, { unix })`),
-else `http://127.0.0.1:<port>` (or `TREESINGER_HOST` when it is a specific
-address). Exit `0` only on `200`, as today, so the Docker `HEALTHCHECK` is
-unchanged.
+`treesinger health [--socket PATH | --url URL]`: by default
+`http://127.0.0.1:<TREESINGER_PORT or 8080>/health`, the Docker `HEALTHCHECK`,
+unchanged; `--socket` probes over a unix socket. Exit `0` only on `200`.
 
 ### HTTP API
 
-Unchanged. `POST /v1/session` → `{ sessionToken, identityToken, expiresAt }`;
-`GET /health` → `200 {"status":"ok"}` / `503 {"status":"unauthenticated"}`.
-Over the socket a client uses any host in the URL:
+Unchanged on the client socket and TCP. `POST /v1/session` →
+`{ sessionToken, identityToken, expiresAt }`; `GET /health` →
+`200 {"status":"ok"}` / `503 {"status":"unauthenticated"}`. Over the socket a
+client uses any host in the URL:
 
 ```sh
 curl -fsS --unix-socket /run/treesinger/treesinger.sock -X POST http://treesinger/v1/session
@@ -165,30 +175,54 @@ curl -fsS --unix-socket /run/treesinger/treesinger.sock -X POST http://treesinge
 
 ### Login
 
-`treesinger login` is unchanged: it writes `TREESINGER_STORE` atomically. The
-running service reads the store on every mint (`ensureAccessToken` →
-`store.read()`), so **logging in while the service runs needs no restart**.
-The only requirement is that `login` runs as the service's user with the
-service's `TREESINGER_STORE` — see the module's `treesinger-login` below.
+The running service reads the store on every mint, so **logging in while the
+service runs needs no restart**. The question is only who writes the store,
+and as whom.
+
+On the admin socket the broker serves `POST /v1/login`: it runs the OAuth
+device flow itself, through the same `OAuthClient` that serves mints, so its
+cached and refreshing token state stays coherent and the store is written the
+way a refresh writes it (the broker's user, its `UMask`, its sandbox). The
+response is newline-delimited JSON, flushed per line: first
+`{"verification_uri_complete", "verification_uri", "user_code"}`, finally
+`{"ok":true}` or `{"error":"..."}`. One login at a time: a second concurrent
+`POST` is `409`.
+
+`treesinger login [--socket PATH]` is its client, printing the same text as a
+local login. Without `--socket` it uses `/run/treesinger-admin.sock` if that
+exists, and otherwise runs the device flow locally against
+`TREESINGER_STORE` (Docker); it says which. That local login is a second
+writer beside a broker running on the same store, so it is only safe for a
+first login or with the broker stopped (a refresh in flight could put the old
+tokens back, and that broker would keep the old account's profiles):
+[docker.md](docker.md#login) says to stop the container for any later login. A socket that exists (or was named) but cannot be used is an
+error, never a fallback: a root login falling back to root's own store would
+log in somewhere the broker never reads.
+
+So `sudo treesinger login` is the whole login on a systemd host, module or
+not. This replaces the module's `treesinger-login`, a `systemd-run` wrapper
+that re-created the service's sandbox property by property to run a second,
+local login as the broker's user.
 
 ## File layout
+
+As it is now (the Bun broker's `src/`, `test/` and `nix/node-modules.nix` are
+gone):
 
 ```
 flake.nix  flake.lock
 nix/
-  node-modules.nix   fixed-output derivation: `bun install --frozen-lockfile` → node_modules
-  package.nix        treesinger: bun build bundle + makeWrapper'd bin/treesinger
-  treesinger-env.nix contrib/treesinger-env with its curl and jq
+  package.nix        treesinger: buildGo127Module, the tests as its check phase
   module.nix         services.treesinger (nixosModules.default adds the flake's package)
-  test.nix           NixOS VM test: the module, twice, and the contrib unit
-contrib/
-  treesinger-env     client helper: mint a session, exec the game with it
-  systemd/treesinger.service  plain-systemd unit (no Nix)
-  systemd/treesinger.sysusers sysusers.d: the treesinger user + group
+  test.nix           NixOS VM test: the module, twice, and the contrib units
+contrib/systemd/
+  treesinger.service        plain-systemd service (no Nix)
+  treesinger.socket         the client socket (and, by drop-in, TCP)
+  treesinger-admin.socket   the root-only admin socket, for `sudo treesinger login`
+  treesinger.sysusers       sysusers.d: the treesinger user + group
 docs/systemd-design.md  this file
-src/serve.ts         serve + health (extracted from main.ts; gains listeners + notify)
-src/config.ts        + socketPath, hostname; port optional
-test/serve.test.ts   new: listeners, socket mode, stale-socket handling, health over socket
+main.go              the CLI: serve | login | exec | health | version
+internal/broker/     the broker; serve.go has the listeners, readiness and health
 README.md            + "systemd" and "NixOS" sections
 ```
 
@@ -199,18 +233,22 @@ Inputs: `nixpkgs` (`nixos-unstable`). Systems: `x86_64-linux`,
 
 | Output | What |
 |---|---|
-| `packages.<system>.default` / `.treesinger` | The broker. `bin/treesinger` runs the bundled JS with nixpkgs `bun`. |
-| `packages.<system>.treesinger-env` | The client helper, see [Hytale servers](#hytale-servers-via-chandlery). |
-| `overlays.default` | `treesinger` (and `treesinger-env`) into `pkgs`. |
+| `packages.<system>.default` / `.treesinger` | The broker: one static binary, `bin/treesinger`. |
+| `overlays.default` | `treesinger` into `pkgs`. |
 | `nixosModules.default` / `.treesinger` | `services.treesinger`, its `package` defaulting (`mkDefault`) to this flake's. `nix/module.nix` alone defaults to `pkgs.treesinger`, from the overlay. |
-| `checks.<system>.package` | the package builds. |
-| `checks.<system>.typecheck` | `tsc --noEmit` over the FOD `node_modules`. |
-| `checks.<system>.test` | `bun test` (all in-memory; no network needed). |
-| `checks.<system>.treesinger-env` | the helper builds (and passes `writeShellApplication`'s shellcheck). |
+| `checks.<system>.package` | the package builds, which runs `go test`. |
 | `checks.x86_64-linux.nixos` | the VM test. |
-| `devShells.<system>.default` | `bun` (mise stays the primary dev tool). |
+| `devShells.<system>.default` | Go (mise stays the primary dev tool). |
+
+(When the broker was Bun, there were also `typecheck`, `test` and
+`treesinger-env` checks and a `treesinger-env` package; `treesinger exec`
+replaced the last.)
 
 ### How the package builds in the sandbox
+
+(The Bun build, kept as the record. The Go package is `nix/package.nix`: a
+static `buildGo127Module` with no modules to vendor, its check phase the
+tests, and the version below.)
 
 - **`node_modules` as a fixed-output derivation**: `bun install
   --frozen-lockfile --ignore-scripts --no-progress` with network,
@@ -263,17 +301,17 @@ Inputs: `nixpkgs` (`nixos-unstable`). Systems: `x86_64-linux`,
 | Option | Type | Default | Meaning |
 |---|---|---|---|
 | `enable` | bool | `false` | |
-| `package` | package | the flake's (via `nixosModules.default`), else `pkgs.treesinger` | |
+| `package` | package | the flake's (via `nixosModules.default`), else `pkgs.treesinger` | Also on `environment.systemPackages`, for `sudo treesinger login` and `treesinger exec`. |
 | `user` | str | `"treesinger"` | Runs as. The module creates it (system user) only when it is `"treesinger"`. |
-| `group` | str | `"treesinger"` | Primary group, **and the group of the socket**. The module always creates it when it is `"treesinger"`. Clients join this group. |
+| `group` | str | `"treesinger"` | Primary group, **and the client socket's `SocketGroup=`**. The module always creates it when it is `"treesinger"`. Clients join this group. |
 | `stateDir` | path (str) | `"/var/lib/treesinger"` | Holds `tokens.json` (`TREESINGER_STORE = "${stateDir}/tokens.json"`). Default is managed by `StateDirectory=treesinger` (mode 0700); any other path must already exist, owned by `user` — the module adds it to `ReadWritePaths` but does not create or chown it (Dan's `/data/servers/treesinger` is owned by dan, and a tmpfiles rule chowning a pre-existing data dir is a footgun). |
-| `socket` | null or str | `"/run/treesinger/treesinger.sock"` | `TREESINGER_SOCKET`; `null` for no socket. Another directory must exist and be writable by `user`; it is added to `ReadWritePaths`. Asserted: `socket` or `port` (or both). |
-| `port` | null or port | `null` | `TREESINGER_PORT`; `null` = no TCP listener. |
-| `host` | str | `"127.0.0.1"` | `TREESINGER_HOST` (only used when `port` is set). Loopback by default: on NixOS the socket is the interface; TCP is opt-in. |
+| `socket` | null or str | `"/run/treesinger/treesinger.sock"` | A `ListenStream=` of `treesinger.socket`; systemd makes its directory. `null` for no unix socket. Asserted: absolute, and `socket` or `port` (or both). |
+| `port` | null or port | `null` | Another `ListenStream=host:port` of `treesinger.socket` (with `FreeBind=`, as sockets start before the network); `null` = no TCP listener. |
+| `host` | str | `"127.0.0.1"` | The TCP listener's address (only used when `port` is set; an IPv6 one is bracketed). Loopback by default: on NixOS the socket is the interface; TCP is opt-in. |
 | `openFirewall` | bool | `false` | Open `port` in the firewall. Asserts `port != null`. |
 | `ownerUuid` | null or str | `null` | `TREESINGER_OWNER_UUID`. |
-| `bearerTokenFile` | null or absolute path string | `null` | A string, not a path literal, which interpolation would copy into the store. Read via `LoadCredential=` and exported as `TREESINGER_BEARER_TOKEN` by a tiny `ExecStart` wrapper, so the secret never lands in the Nix store or the unit file. |
-| `environment` | attrsOf str | `{}` | Extra env (e.g. `TREESINGER_SKEW_MS`), merged over the above. |
+| `bearerTokenFile` | null or absolute path string | `null` | A string, not a path literal, which interpolation would copy into the store. `LoadCredential=bearer-token:<path>`, which the broker reads from `$CREDENTIALS_DIRECTORY` itself: no wrapper, and the secret is never in the Nix store, the unit file or the broker's environment. |
+| `environment` | attrsOf str | `{}` | Extra env (e.g. `TREESINGER_SKEW_MS`), merged over the above. Asserted: no `TREESINGER_PORT`/`TREESINGER_HOST`, which the socket-activated broker refuses. |
 | `environmentFile` | null or absolute path string | `null` | `EnvironmentFile=` for secrets the deployer manages. |
 
 Example — Dan's server:
@@ -284,31 +322,33 @@ services.treesinger = {
   user = "dan";                         # owns /data/servers/treesinger (1000:100)
   stateDir = "/data/servers/treesinger";  # tokens.json carries over from the container's /data
 };
-# group stays "treesinger"; the socket is /run/treesinger/treesinger.sock, 0660 dan:treesinger
+# group stays "treesinger"; the socket is /run/treesinger/treesinger.sock, 0660 root:treesinger
 ```
 
 The container wrote `/data/tokens.json` on that volume, which is
 `/data/servers/treesinger/tokens.json` on the host — exactly the module's
 `TREESINGER_STORE` — so migration is "stop the container, switch". No re-login.
 
-### The unit the module renders
+### The units the module renders
+
+The two socket units are [above](#socket-activation) (`port` adds
+`ListenStream=<host>:<port>` and `FreeBind=yes` to `treesinger.socket`); both
+are `WantedBy=sockets.target`. The service:
 
 ```ini
 [Unit]
 Description=Treesinger: Hytale server authentication broker
+Requires=treesinger.socket treesinger-admin.socket
+After=treesinger.socket treesinger-admin.socket network-online.target
 Wants=network-online.target
-After=network-online.target
 
 [Service]
 Type=notify
 NotifyAccess=main                  # all when Bun spawned systemd-notify
-ExecStart=<treesinger-serve>          # exports the bearer credential if any, then execs treesinger serve
-Environment=TREESINGER_STORE=<stateDir>/tokens.json TREESINGER_SOCKET=<socket> …
+ExecStart=<package>/bin/treesinger serve
+Environment=TREESINGER_STORE=<stateDir>/tokens.json …
 User=<user>
 Group=<group>
-RuntimeDirectory=treesinger
-RuntimeDirectoryMode=0750
-RuntimeDirectoryPreserve=yes
 StateDirectory=treesinger          # only when stateDir is the default
 StateDirectoryMode=0700
 ReadWritePaths=<stateDir>          # only when it is not
@@ -347,25 +387,27 @@ LoadCredential=bearer-token:<bearerTokenFile>   # only when set
 EnvironmentFile=<environmentFile>               # only when set
 ```
 
-`network-online.target` (`Wants=` and `After=`): the broker binds its socket
-without the network, but its clients mint their sessions the moment it is
-ready, once, at boot, and a mint fails if Hypixel cannot be reached yet.
-Waiting here makes every client ordered after the broker wait too.
+No `wantedBy`: the sockets start it. No `RuntimeDirectory`: systemd makes the
+sockets' directory, and the broker writes nothing under `/run`. No wrapper in
+`ExecStart`: the bearer token is a credential the broker reads itself.
 
-`RuntimeDirectoryPreserve=yes` keeps `/run/treesinger`'s **inode** across a
-restart of the broker, so a client that bind-mounted the directory into its own
-namespace keeps seeing the live socket (the stale one is unlinked and recreated
-inside it — hence step 1 of [socket semantics](#socket-semantics)).
+`network-online.target` (`Wants=` and `After=`): the broker serves without the
+network, but its clients mint their sessions the moment it is ready, once, at
+boot, and a mint fails if Hypixel cannot be reached yet. Waiting here makes
+every client ordered after the broker wait too. (A client that relies on the
+socket alone, without ordering after the service, still waits: its connection
+sits in the backlog until the broker is up.)
 
 Every hardening line is verified in the VM test, not assumed: the broker
-starts, binds, notifies, reads and writes its store, and reaches the network
+starts, serves, notifies, reads and writes its store, and reaches the network
 stack with all of them, `ProcSubset=pid` and `PrivateUsers=yes` included.
 `~@resources` is **not** there: on nixos-26.05's bun 1.3.13 the broker died
 of `SIGSYS` at start — it calls `sched_setscheduler` (in `@resources`) on its
 threads; unstable's 1.4.2 does not, so only the 26.05 run caught it.
-`systemd-analyze security` scores it **1.4** ("OK"); the test asserts ≤ 1.5. What is left exposed is what it needs: `AF_INET` for
-Hypixel, `AF_UNIX`, W+X memory for the JIT, `NotifyAccess=all`. (The Go
-broker needs neither of the last two.)
+`systemd-analyze security` scored the Bun broker **1.4** ("OK"); the test
+asserts ≤ 1.5. What is left exposed is what it needs: `AF_INET` for Hypixel and
+`AF_UNIX`. (The Bun broker also needed W+X memory for its JIT and
+`NotifyAccess=all`.)
 
 ### Why a fixed user, not `DynamicUser`
 
@@ -388,55 +430,46 @@ and confines it with the hardening above instead. (`DynamicUser` remains
 possible for someone who names the dynamic user differently; it is not
 offered as an option — see open questions.)
 
-### `treesinger-login`
+### Login on NixOS
 
-The module puts a `treesinger-login` command on `environment.systemPackages`.
-It runs the one-time device login **as the service's user, with the service's
-environment and filesystem view**, so the token lands where `serve` reads it
-with the right owner and mode:
+The module puts the package on `environment.systemPackages`, and the login is
+`sudo treesinger login`, through the admin socket ([login](#login)): the
+running broker writes the store, as itself, in its own sandbox.
 
-```sh
-sudo treesinger-login
-# → systemd-run --quiet --wait --collect --pty --pipe --unit=treesinger-login \
-#     -p User=<user> -p Group=<group> -p UMask=0077 … every sandbox property of the service … \
-#     [-p EnvironmentFile=…] --setenv=TREESINGER_STORE=<stateDir>/tokens.json [--setenv=… extra env] \
-#     <package>/bin/treesinger login
-```
-
-The properties are rendered from the same attrset as the service's, so the
-two cannot drift (`StateDirectory=` included, which creates the default
-directory if the service has never run). `--pty --pipe` is a terminal when
-run from one and plain pipes otherwise. The VM test runs it offline: it gets
-as far as the network, as the broker's user, and writes nothing.
-
-No restart afterwards (the broker reads the store per mint). The equivalent
-without the helper, for a plain systemd host:
-
-```sh
-sudo -u treesinger TREESINGER_STORE=/var/lib/treesinger/tokens.json treesinger login
-```
+This replaced `treesinger-login`, a wrapper that ran a second, local
+`treesinger login` under `systemd-run`, with every sandbox property of the
+service rendered as a `-p` flag so the two could not drift. It worked, but it
+was a script, it duplicated the service's sandbox, and it raced the running
+broker for the store; through the admin socket there is one writer, the one
+`OAuthClient`, and nothing to keep in step. The VM test runs the login
+offline: as root it reaches the broker, whose device flow fails at the
+network and writes nothing; as a group member it is refused at the socket,
+with no fallback to a local login.
 
 ## Plain systemd (no Nix)
 
-Shipped as `contrib/systemd/`:
+Shipped as `contrib/systemd/`, and attached to every release:
 
 - `treesinger.sysusers` → `/etc/sysusers.d/treesinger.conf`:
   `u treesinger - "Treesinger authentication broker" /var/lib/treesinger`
-  (creates the user and its same-named group).
+  (creates the user and its same-named group, the client socket's group).
+- `treesinger.socket` and `treesinger-admin.socket` → `/etc/systemd/system/`:
+  the units [above](#socket-activation), TCP as a commented-out drop-in.
 - `treesinger.service` → `/etc/systemd/system/`: the unit above with the
   defaults filled in, `ExecStart=/usr/local/bin/treesinger serve` (the release
-  binary), `StateDirectory=treesinger`, TCP and an `EnvironmentFile` as
-  commented-out lines.
-- `treesinger-env` → `/usr/local/bin/` (needs `curl` and `jq`).
+  binary), `StateDirectory=treesinger`, a `LoadCredential=bearer-token:` as a
+  commented-out line, and `[Install] Also=` the two sockets.
 
-The VM test's third machine installs exactly these two unit files (only
-`ExecStart` substituted), runs `systemd-sysusers` on the sysusers file, and
-checks the socket and `/health`: it scores the same 1.4.
+`systemctl enable --now treesinger.socket treesinger-admin.socket`, then
+`sudo treesinger login`. A client's `ExecStart` is `treesinger exec`, the same
+binary. There is no other file to install.
 
-There is no `treesinger.socket`, by necessity — see
-[socket activation](#socket-activation--investigated-not-possible).
+The VM test's third machine installs exactly these units (only `ExecStart`
+substituted), runs `systemd-sysusers` on the sysusers file, starts the
+sockets, and checks that the service waits for a connection, the sockets'
+modes, and `/health`.
 
-The README's "systemd" section has the install steps, the login, a client
+[`docs/systemd.md`](systemd.md) has the install steps, the login, a client
 unit, and the NixOS equivalent.
 
 ## How each shared contract is met
@@ -445,9 +478,10 @@ unit, and the NixOS equivalent.
 
 | Contract | Met by |
 |---|---|
-| `services.treesinger` listens on `/run/treesinger/treesinger.sock` | `socket` option default; `RuntimeDirectory=treesinger`. |
-| group `treesinger`, mode `0660` | Socket created by the service with its primary group `group` (default `treesinger`), then `chmod 0660`. Directory `0750` `user:group`, so group members can traverse it. |
-| HTTP API unchanged | No change to `src/app.ts`. |
+| `services.treesinger` listens on `/run/treesinger/treesinger.sock` | `socket` option default, a `ListenStream=` of `treesinger.socket`. |
+| group `treesinger`, mode `0660` | `SocketGroup=<group>` (default `treesinger`), `SocketMode=0660`, made by systemd. Directory `0755 root:root` (`DirectoryMode=`), holding only that socket. |
+| `/run/treesinger` holds exactly `treesinger.sock` (Chandlery's VM test) | The admin socket is `/run/treesinger-admin.sock`, outside it. |
+| HTTP API unchanged | Unchanged on the client socket; `/v1/login` only on the admin socket. |
 
 ### Hytale servers (via Chandlery)
 
@@ -456,18 +490,22 @@ The contract is `services.chandlery.servers.<n>.treesinger.socket =
 needs from Treesinger, and what to watch for:
 
 - **Ordering**: `wants`/`after = [ "treesinger.service" ]` when the socket is
-  set. `Type=notify` means *after* = socket bound.
+  set. `Type=notify` means *after* = serving. With socket activation the
+  socket is there from early boot regardless, and a connection made before
+  the broker is up waits rather than fails.
 - **Access**: `SupplementaryGroups = [ "treesinger" ]` (the static group).
   This holds under `PrivateUsers=yes` too (measured in the VM test): the group
   is unmapped inside the client's user namespace, shown as `nogroup`, but the
   socket's permission check is on the real gid, so `connect()` succeeds.
   Chandlery's open question on `PrivateUsers` and the treesinger group is
   answered: no `PrivateUsers=identity` needed for this.
-- **Confinement**: bind the **directory**, not the socket file, and optional:
-  `BindReadOnlyPaths = [ "-/run/treesinger" ]`. A bind of the socket file
-  itself pins the old inode and goes stale the moment the broker restarts; the
-  directory is stable thanks to `RuntimeDirectoryPreserve=yes`. The `-` keeps
-  the game starting (unauthenticated) if the broker is absent. `connect()` to a
+- **Confinement**: bind the directory or the socket file, optionally:
+  `BindReadOnlyPaths = [ "-/run/treesinger" ]`. systemd holds the socket, so
+  its inode outlives restarts of the broker and either bind stays live. (When
+  the broker made its own socket, a bind of the file pinned the old inode and
+  went stale on a restart, so only the directory, kept by
+  `RuntimeDirectoryPreserve=yes`, would do.) The `-` keeps the game starting
+  (unauthenticated) if the broker is not installed. `connect()` to a
   socket works through a read-only bind (the read-only check does not apply to
   socket inodes).
 - **Ordering on the network.** A client mints its session once, at boot, and
@@ -498,28 +536,35 @@ needs from Treesinger, and what to watch for:
      the last start is not reused, and exit 0, so the game still boots
      unauthenticated.
 
-  To make (1) a one-liner for anyone on plain systemd, Treesinger ships
-  **`contrib/treesinger-env`**, packaged as `packages.treesinger-env` (a
-  `writeShellApplication` with `curl` and `jq`, so shellchecked at build) —
+  To make (1) a one-liner for anyone on plain systemd, the binary has
+  **`treesinger exec`** —
 
   ```sh
-  treesinger-env [--socket PATH | --url URL] -- COMMAND [ARGS…]
+  treesinger exec [--socket PATH | --url URL] -- COMMAND [ARGS…]
   ```
 
-  — which `POST`s `/v1/session` (`-m 10`), exports the two variables on
-  success, warns to stderr and continues without them on any failure (exactly
-  the image's degradation), then `exec`s `COMMAND`. Tokens never touch argv. A
-  shell `exec` rather than a Bun subcommand because Bun cannot `execve` — a Bun
-  wrapper would have to stay resident as the game's parent, breaking the
-  notify-wrapper's PID and the console FIFO's stdin. A bearer token, if
-  `TREESINGER_BEARER_TOKEN` is set, goes to curl on stdin (`-H @-`), not argv,
-  and is unset before the `exec`.
+  — which `POST`s `/v1/session` (10 s timeout; default socket
+  `/run/treesinger/treesinger.sock`), puts the pair in the two variables on
+  success and says so on stderr, warns to stderr and continues without them on
+  any failure (exactly the image's degradation), then `execve`s `COMMAND`
+  (looked up on `PATH`), which so keeps the pid, stdin and notify socket.
+  Tokens never touch argv. The bearer token (`TREESINGER_BEARER_TOKEN`, or the
+  `bearer-token` credential) is sent; the variable is removed from what
+  `COMMAND` gets, but a credential cannot be: its file stays readable by the
+  unit's user, so by `COMMAND`, for as long as the unit runs. A usage
+  error (no `--`, no command) exits 2 and runs nothing.
+
+  It replaced `contrib/treesinger-env`, a shell script needing `curl` and `jq`
+  that did the same: a shell `exec` then because Bun cannot `execve`, and a
+  Bun wrapper would have had to stay resident as the game's parent, breaking
+  the notify wrapper's PID and the console FIFO's stdin. Go can, so it is one
+  binary again.
 
   Chandlery's own design (its `docs/nix.md` on its `nix` branch) inlines the
-  mint in its run script instead: its `images/hytale/run` learns
-  `TREESINGER_SOCKET` and makes the same POST with `curl --unix-socket`, which
-  is shape 1. Either works against this broker; `treesinger-env` is for
-  servers that are not Chandlery's.
+  mint in its run script instead: its `images/hytale/run` learns its own
+  `TREESINGER_SOCKET` variable (Chandlery's, not the broker's) and makes the
+  same POST with `curl --unix-socket`, which is shape 1. Either works against
+  this broker; `treesinger exec` is for servers that are not Chandlery's.
 
 ### Portical
 
@@ -538,6 +583,9 @@ tidewaiter`, and the README says why.
 ## Test plan
 
 ### Bun (`bun test`, in-memory where possible)
+
+(The Bun broker's tests, kept as the record; the Go tests are beside the code
+in `internal/broker/`.)
 
 - `test/config.test.ts` (new): `configFromEnv` — no vars → port 8080, host
   `0.0.0.0`, no socket; socket only → no port; socket + port → both; host
@@ -562,48 +610,63 @@ tidewaiter`, and the README says why.
 
 ### Nix (as built)
 
-`nix flake check` runs the package, typecheck, test, `treesinger-env` and VM
-checks. `nix/test.nix` boots three machines, offline:
+`nix flake check` runs the package (whose check phase is `go test`) and the
+VM test; CI runs both in its `nix` job. `nix/test.nix` boots three machines,
+offline:
 
 - **`defaults`** — `services.treesinger.enable` from `nixosModules.default`:
-  - `wait_for_unit` returns with the socket already there (`Type=notify`);
-  - socket `srw-rw---- treesinger treesinger`, `/run/treesinger` `750`,
-    `/var/lib/treesinger` `700`;
+  - at boot both sockets are listening and the service is **inactive**; the
+    first connection starts it, and is answered;
+  - client socket `srw-rw---- root treesinger`, `/run/treesinger` `755
+    root:root` holding only `treesinger.sock`, `/var/lib/treesinger` `700`;
+  - admin socket `srw------- root root`: a group member cannot connect, and
+    `/v1/login` on the client socket is `404`;
   - a member gets `503 {"status":"unauthenticated"}` from `/health` and
-    `401 {"error":"not_logged_in"}` from `/v1/session`; `treesinger health`
-    exits non-zero; a non-member cannot connect;
+    `401 {"error":"not_logged_in"}` from `/v1/session`; `treesinger health
+    --socket` exits non-zero; a non-member cannot connect;
   - no TCP listener;
+  - login: as root the admin socket streams an error (offline) and
+    `treesinger login` fails having written nothing; as a member
+    `treesinger login` fails with permission denied rather than logging in
+    locally;
   - a confined client (user `bob`, `SupplementaryGroups=treesinger`,
     `TemporaryFileSystem=/run`, `BindReadOnlyPaths=-/run/treesinger`) running
-    `treesinger-env` gets the broker's 401 (so the socket was reachable),
+    `treesinger exec` gets the broker's 401 (so the socket was reachable),
     warns and runs unauthenticated; its `/run` holds only `treesinger`;
-  - `systemctl restart treesinger` keeps `/run/treesinger`'s inode, and the
-    confined client (via `nsenter`) reaches the new socket;
   - a client with `PrivateUsers=yes` and the supplementary group connects;
-  - stop removes the socket, and `treesinger-env` then degrades;
-  - against a fake broker, `treesinger-env` passes the session on;
-  - `treesinger-login` runs offline as far as the network, writes nothing;
-  - `systemd-analyze security`: 1.4, asserted ≤ 1.5.
+  - a connection made as `systemctl restart --no-block` runs is answered;
+    after `systemctl stop treesinger.service` the socket keeps its inode and
+    the confined client (via `nsenter`) still gets an answer, which starts it
+    again;
+  - `treesinger exec` with no broker warns and runs the command without the
+    pair; against a fake broker that wants a bearer token, it passes the pair
+    on with `TREESINGER_BEARER_TOKEN` or a `bearer-token` credential, never
+    passes the token itself on, and without one runs unauthenticated; a
+    usage error runs nothing;
+  - `systemd-analyze security`, asserted ≤ 1.5.
 - **`custom`** — `user = "gamer"` (an existing normal user),
   `stateDir = "/data/servers/treesinger"` (made by tmpfiles, as a deployer
   would), `port = 8080`, `bearerTokenFile`, extra `environment`:
-  - socket `srw-rw---- gamer treesinger`;
+  - socket `srw-rw---- root treesinger`, the broker running as `gamer`;
   - with a seeded `tokens.json` holding a valid access token, `/health` is
-    `200` over the socket and over `127.0.0.1:8080` — the store path and its
-    permissions are wired — and nothing listens on 8080 beyond loopback;
+    `200` over the socket and over `127.0.0.1:8080` (the same socket unit),
+    and `treesinger health` with no arguments, the Docker probe, passes;
+    nothing listens on 8080 beyond loopback, and `/v1/login` there is `404`;
   - `/v1/session` without the bearer is `401 unauthorized`, with it gets past
-    the gate (`500`, Hypixel being absent); the secret is not in the unit's
-    environment, `TREESINGER_SKEW_MS` is.
-- **`plain`** — no module: `contrib/systemd`'s unit and sysusers file, see
+    the gate (`500`, Hypixel being absent); the secret is in neither the
+    unit's environment nor the broker's, `TREESINGER_SKEW_MS` is.
+- **`plain`** — no module: `contrib/systemd`'s units and sysusers file, see
   [plain systemd](#plain-systemd-no-nix).
 
-Also run against nix-config's nixos-26.05 pin with `--override-input nixpkgs`
-(bun 1.3.13): green, after it caught the `@resources` crash above.
+(The Bun broker's run, against nix-config's nixos-26.05 pin with
+`--override-input nixpkgs`, caught the `@resources` crash above.)
 
 ### Docker
 
-- `bun run.ts image` still builds; the image's `HEALTHCHECK` still works (no
-  socket set → TCP probe, unchanged).
+- `./run image` still builds; the image's `HEALTHCHECK` still works (not
+  socket-activated → TCP probe, unchanged), and `treesinger login` logs
+  in locally, there being no admin socket (first login in the running
+  container, later ones with it stopped).
 
 ## Refactors done
 
@@ -629,8 +692,9 @@ Later, found while building:
 
 ## Open questions
 
-1. ~~Does Treesinger ship `treesinger-env`?~~ **Yes**, as `contrib/` and a
-   flake package; Chandlery inlines its own in `images/hytale/run`.
+1. ~~Does Treesinger ship `treesinger-env`?~~ It did, as `contrib/` and a
+   flake package; now it is `treesinger exec`, in the one binary. Chandlery
+   inlines its own in `images/hytale/run`.
 2. ~~Package `pkgs`~~: **`nixosModules.default` defaults (`mkDefault`) to the
    flake's own package**; `nix/module.nix` alone, or the overlay, uses the
    consumer's `pkgs`. Both pass the checks (1.3.13 and 1.4.2 give the same

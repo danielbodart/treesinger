@@ -4,7 +4,9 @@
 > since rewritten in Go (`main.go`, `internal/broker/`). The design here stands;
 > where it names Bun, `fetch`, yadic or `.ts` files, read Go, `http.RoundTripper`
 > / `http.Handler`, the `Container` struct and `internal/broker/*.go`. The
-> workflow is `.github/workflows/ci.yml`.
+> workflow is `.github/workflows/ci.yml`. Under systemd it is now also
+> socket-activated, with `exec` and an admin socket for `login` (see
+> `docs/systemd-design.md`).
 
 ## What it is
 
@@ -284,7 +286,9 @@ Also a `ci` workflow: `bun install`, `bun test`, typecheck on push/PR.
 ## Open decisions for the builder
 
 - `login` and `serve` as subcommands of one binary vs a tiny admin endpoint for the
-  device flow. (Leaning: subcommands.)
+  device flow. (Leaning: subcommands.) **Both, in the end:** `login` is a
+  subcommand that, under systemd, drives `POST /v1/login` on a root-only admin
+  socket, and otherwise (Docker) runs the device flow itself.
 - Profile selection when an account has multiple profiles (default to `owner`, or a
   `--owner-uuid`/config value).
 - Whether `/v1/session` caches a just-minted pair briefly or always mints fresh

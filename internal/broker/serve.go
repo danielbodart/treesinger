@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net"
 	"net/http"
 	"os"
@@ -15,18 +14,19 @@ import (
 	"time"
 )
 
-// Listening is the listeners `serve` opened: what to log, and how to close
+// Listening is the listeners `serve` is serving: what to log, and how to close
 // them.
 type Listening struct {
-	// `unix:/path` and/or `http://host:port`, in that order.
+	// `unix:/path` or `http://host:port` each, in the order they were passed,
+	// the admin socket's marked as such.
 	URLs []string
 
 	servers   []*http.Server
 	listeners []net.Listener
 }
 
-// Stop closes every listener and its connections. Closing the unix listener
-// removes its socket.
+// Stop closes every listener and its connections. A socket systemd passed is
+// only closed here, not unlinked: it is systemd's, and outlives this process.
 func (l *Listening) Stop() {
 	for i, server := range l.servers {
 		server.Close()
@@ -37,124 +37,93 @@ func (l *Listening) Stop() {
 
 // idleTimeout closes a connection that sends nothing for this long, before its
 // request or between requests, so idle and slow-loris clients cannot hold
-// descriptors open indefinitely. http.Server has no timeouts by default.
+// descriptors open indefinitely. http.Server has no timeouts by default, and
+// is given no write timeout: a login's answer streams for as long as the
+// operator takes to approve it.
 const idleTimeout = 10 * time.Second
 
-func (l *Listening) serve(listener net.Listener, handler http.Handler) {
+func (l *Listening) serve(listener net.Listener, handler http.Handler, label string) {
 	server := &http.Server{Handler: handler, ReadHeaderTimeout: idleTimeout, IdleTimeout: idleTimeout}
 	l.servers = append(l.servers, server)
 	l.listeners = append(l.listeners, listener)
+	l.URLs = append(l.URLs, label)
 	go server.Serve(listener)
 }
 
-// Listen opens every configured listener (the unix socket first, then TCP)
-// and returns once all of them are bound. A failure closes whatever did open,
-// so a half-started broker never lingers.
-func Listen(config Config, handler http.Handler) (*Listening, error) {
+// Listen serves app and admin. Under socket activation it serves exactly the
+// sockets systemd passed (inherited): the one named "admin" gets the admin
+// handler, every other one, unix or TCP, the app. The socket units then say
+// where it listens, so TREESINGER_PORT/HOST saying so as well is refused
+// rather than one of them silently ignored. Otherwise (Docker, development)
+// it binds TCP itself, and the admin handler is not served at all: a port is
+// no boundary for something that can replace the account's credentials.
+//
+// It returns once everything is listening. A failure closes whatever it was
+// given or opened, so a half-started broker never lingers.
+func Listen(config Config, inherited []Inherited, app, admin http.Handler) (*Listening, error) {
 	listening := &Listening{}
-	if err := listening.open(config, handler); err != nil {
-		listening.Stop()
+	if len(inherited) > 0 {
+		if config.Port != nil || config.Hostname != "" {
+			closeAll(inherited)
+			return nil, errors.New("TREESINGER_PORT and TREESINGER_HOST cannot be set under socket activation: the listeners come from the socket units (add a ListenStream= there instead)")
+		}
+		// Checked before anything is served, so a refusal serves nothing. A
+		// unix socket's file mode is the admin socket's only access check; a
+		// port has none, so an admin descriptor that is not a unix socket
+		// (FileDescriptorName=admin on a ListenStream=PORT) is refused.
+		for _, each := range inherited {
+			if _, unix := each.Listener.Addr().(*net.UnixAddr); each.Name == AdminName && !unix {
+				closeAll(inherited)
+				return nil, fmt.Errorf("the admin descriptor is %s, not a unix socket: the admin endpoints are only ever served on a unix socket, whose mode is their access check", label(each.Listener))
+			}
+		}
+		for _, each := range inherited {
+			if each.Name == AdminName {
+				listening.serve(each.Listener, admin, "admin "+label(each.Listener))
+			} else {
+				listening.serve(each.Listener, app, label(each.Listener))
+			}
+		}
+		return listening, nil
+	}
+	listener, err := listenTCP(config)
+	if err != nil {
 		return nil, err
 	}
+	listening.serve(listener, app, label(listener))
 	return listening, nil
 }
 
-func (l *Listening) open(config Config, handler http.Handler) error {
-	if config.SocketPath != "" {
-		if err := clearStaleSocket(config.SocketPath); err != nil {
-			return err
-		}
-		listener, err := net.Listen("unix", config.SocketPath)
-		if err != nil {
-			return err
-		}
-		l.serve(listener, handler)
-		// bind() honours the umask (0755 under 022, which no one else can
-		// connect() to), so the mode is set rather than left to chance. The
-		// group is the process's primary group: membership is the access check.
-		if err := os.Chmod(config.SocketPath, 0o660); err != nil {
-			return err
-		}
-		l.URLs = append(l.URLs, "unix:"+config.SocketPath)
-	}
+func listenTCP(config Config) (net.Listener, error) {
+	port := DefaultPort
 	if config.Port != nil {
-		// An IPv4 address binds IPv4 only: Go would otherwise take 0.0.0.0 to
-		// mean every address, IPv6 too.
-		network := "tcp"
-		if ip := net.ParseIP(config.Hostname); ip != nil && ip.To4() != nil {
-			network = "tcp4"
-		}
-		listener, err := net.Listen(network, net.JoinHostPort(config.Hostname, strconv.Itoa(*config.Port)))
-		if err != nil {
-			return err
-		}
-		l.serve(listener, handler)
-		port := listener.Addr().(*net.TCPAddr).Port
-		l.URLs = append(l.URLs, "http://"+net.JoinHostPort(config.Hostname, strconv.Itoa(port)))
+		port = *config.Port
 	}
-	return nil
+	host := config.Hostname
+	if host == "" {
+		host = "0.0.0.0"
+	}
+	// An IPv4 address binds IPv4 only: Go would otherwise take 0.0.0.0 to
+	// mean every address, IPv6 too.
+	network := "tcp"
+	if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+		network = "tcp4"
+	}
+	return net.Listen(network, net.JoinHostPort(host, strconv.Itoa(port)))
 }
 
-// clearStaleSocket removes a socket left behind (a crash, a SIGKILL, or the
-// directory kept across a restart by systemd's RuntimeDirectoryPreserve),
-// which would make bind fail with EADDRINUSE, but only if nobody is answering
-// on it. A live one is another broker, very likely on the same store, which the
-// single-writer design does not allow. Anything that is not a socket is
-// someone's file, and is never deleted.
-func clearStaleSocket(path string) error {
-	info, err := os.Lstat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
+// label is a listener as a URL a client could use.
+func label(listener net.Listener) string {
+	if address, ok := listener.Addr().(*net.UnixAddr); ok {
+		return "unix:" + address.Name
 	}
-	if err != nil {
-		return err
-	}
-	if info.Mode()&fs.ModeSocket == 0 {
-		return fmt.Errorf("%s exists and is not a socket; refusing to replace it", path)
-	}
-	if answering(path) {
-		return fmt.Errorf("%s is already being served by another process", path)
-	}
-	return os.Remove(path)
-}
-
-func answering(path string) bool {
-	conn, err := net.Dial("unix", path)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	return true
-}
-
-// Notify is how `serve` tells a supervisor it is listening.
-type Notify func(env Env) error
-
-// SystemdNotify is readiness for systemd `Type=notify`: sd_notify's "READY=1",
-// sent as one datagram to $NOTIFY_SOCKET (a path, or an abstract socket when it
-// starts with '@'). Sent by the main process itself, so it needs no helper and
-// no NotifyAccess=all. Without NOTIFY_SOCKET (Docker, a shell) it does
-// nothing.
-func SystemdNotify(env Env) error {
-	path := env["NOTIFY_SOCKET"]
-	if path == "" {
-		return nil
-	}
-	conn, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: path, Net: "unixgram"})
-	if err != nil {
-		return fmt.Errorf("sd_notify: %w", err)
-	}
-	defer conn.Close()
-	if _, err := conn.Write([]byte("READY=1")); err != nil {
-		return fmt.Errorf("sd_notify: %w", err)
-	}
-	return nil
+	return "http://" + listener.Addr().String()
 }
 
 // Start listens, then says so. Ready is signalled only once every listener is
-// bound, so a client ordered after the service never finds the socket missing.
-func Start(c *Container, notify Notify, env Env) (*Listening, error) {
-	listening, err := Listen(*c.Config, c.App)
+// serving, so a client ordered after the service never finds it missing.
+func Start(c *Container, inherited []Inherited, notify Notify, env Env) (*Listening, error) {
+	listening, err := Listen(*c.Config, inherited, c.App, c.Admin)
 	if err != nil {
 		return nil, err
 	}
@@ -167,9 +136,13 @@ func Start(c *Container, notify Notify, env Env) (*Listening, error) {
 }
 
 // Serve runs the broker. It returns only once the process is signalled, after
-// closing its listeners (which removes the socket).
+// closing its listeners.
 func Serve(c *Container) error {
-	listening, err := Start(c, SystemdNotify, Environ())
+	inherited, err := InheritedListeners()
+	if err != nil {
+		return err
+	}
+	listening, err := Start(c, inherited, SystemdNotify, Environ())
 	if err != nil {
 		return err
 	}
@@ -180,20 +153,30 @@ func Serve(c *Container) error {
 	return nil
 }
 
+const healthUsage = "health [--socket PATH | --url URL]"
+
 // Health probes a running broker's `/health`: the container HEALTHCHECK,
-// self-contained so the slim runtime image needs no curl/wget. Over the socket
-// when one is configured, else the TCP port on loopback (or the one address it
-// binds). Healthy only on a 2xx.
-func Health(config Config) error {
-	client := &http.Client{}
-	if config.SocketPath != "" {
-		client.Transport = unixTransport(config.SocketPath)
-	}
-	target, err := healthURL(config)
+// self-contained so the slim runtime image needs no curl/wget. Over a unix
+// socket with --socket, at a base URL with --url, else the TCP port `serve`
+// would bind, on loopback (or the one address it binds). Healthy only on a
+// 2xx.
+func Health(args []string, env Env) error {
+	line, err := parseOptionsOnly(healthUsage, args, "--socket", "--url")
 	if err != nil {
 		return err
 	}
-	response, err := client.Get(target)
+	client, base, _, err := line.broker(healthUsage, "")
+	if err != nil {
+		return err
+	}
+	if client == nil {
+		client = &http.Client{}
+		if base, err = tcpURL(env); err != nil {
+			return err
+		}
+	}
+	client.Timeout = 10 * time.Second
+	response, err := client.Get(base + "/health")
 	if err != nil {
 		return fmt.Errorf("unreachable: %w", err)
 	}
@@ -204,21 +187,26 @@ func Health(config Config) error {
 	return nil
 }
 
-func healthURL(config Config) (string, error) {
-	// Any host will do over a socket; it only fills in the URL.
-	if config.SocketPath != "" {
-		return "http://treesinger/health", nil
+// tcpURL is the base URL of the TCP listener `serve` binds for this
+// environment, on loopback when it binds every address.
+func tcpURL(env Env) (string, error) {
+	port, host, err := tcpFromEnv(env)
+	if err != nil {
+		return "", err
 	}
-	if config.Port == nil {
-		return "", errors.New("no listener configured")
+	if port == nil {
+		port = new(DefaultPort)
 	}
-	host := config.Hostname
 	switch host {
 	case "0.0.0.0", "::", "":
 		host = "127.0.0.1"
 	}
-	return "http://" + net.JoinHostPort(host, strconv.Itoa(*config.Port)) + "/health", nil
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(*port)), nil
 }
+
+// socketURL is the base URL of a broker reached over a unix socket. Any host
+// will do; it only fills in the URL.
+const socketURL = "http://treesinger"
 
 // unixTransport sends every request over the unix socket at path, whatever
 // the URL's host.

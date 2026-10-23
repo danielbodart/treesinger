@@ -49,6 +49,9 @@ type SessionClient struct {
 	mu            sync.Mutex
 	profiles      *ProfilesResponse
 	profilesFetch time.Time
+	// generation counts ForgetProfiles calls, so a lookup already in flight
+	// when one happens does not cache the forgotten account's profiles.
+	generation uint64
 }
 
 func NewSessionClient(deps SessionDeps) *SessionClient { return &SessionClient{SessionDeps: deps} }
@@ -58,7 +61,7 @@ func NewSessionClient(deps SessionDeps) *SessionClient { return &SessionClient{S
 func (s *SessionClient) GetProfiles(ctx context.Context) (ProfilesResponse, error) {
 	now := s.Clock.Now()
 	s.mu.Lock()
-	cached, at := s.profiles, s.profilesFetch
+	cached, at, generation := s.profiles, s.profilesFetch, s.generation
 	s.mu.Unlock()
 	if cached != nil && now.Sub(at) < profilesTTL {
 		return *cached, nil
@@ -72,9 +75,20 @@ func (s *SessionClient) GetProfiles(ctx context.Context) (ProfilesResponse, erro
 		return ProfilesResponse{}, err
 	}
 	s.mu.Lock()
-	s.profiles, s.profilesFetch = &profiles, now
+	if s.generation == generation {
+		s.profiles, s.profilesFetch = &profiles, now
+	}
 	s.mu.Unlock()
 	return profiles, nil
+}
+
+// ForgetProfiles drops the cached profiles, for when the account behind them
+// may have changed: after a login, which may have been to another account.
+func (s *SessionClient) ForgetProfiles() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.profiles = nil
+	s.generation++
 }
 
 // resolveProfile is which profile a mint targets: an explicit override, else

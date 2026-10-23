@@ -102,7 +102,7 @@ func newHarness(t *testing.T, o options) *harness {
 		Transport: HandlerTransport(h.fake),
 		Store:     h.store,
 		Logger:    silentLogger{},
-		Sleep:     func(time.Duration) {}, // no real timers in tests
+		Sleep:     func(context.Context, time.Duration) error { return nil }, // no real timers in tests
 		Retry:     &RetryPolicy{Retries: DefaultRetryPolicy.Retries, BaseDelay: DefaultRetryPolicy.BaseDelay, Sleep: func(context.Context, time.Duration) error { return nil }},
 	}
 	if err := h.c.Wire(); err != nil {

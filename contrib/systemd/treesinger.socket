@@ -1,0 +1,25 @@
+# /etc/systemd/system/treesinger.socket: the broker's client socket, held by
+# systemd, so it exists from early boot and outlives restarts of the broker.
+# The first connection starts treesinger.service, which serves this socket's
+# listeners; a connection made while it starts or restarts waits, it is not
+# refused. Enable this (and treesinger-admin.socket), not the service:
+#   sudo systemctl enable --now treesinger.socket treesinger-admin.socket
+# Clients join the treesinger group and POST to the socket. See docs/systemd.md.
+[Unit]
+Description=Treesinger: Hytale server authentication broker (client socket)
+
+[Socket]
+ListenStream=/run/treesinger/treesinger.sock
+# Being in the group is what lets a client mint a session.
+SocketGroup=treesinger
+SocketMode=0660
+# /run/treesinger is made by systemd, and only ever holds this socket, so a
+# confined client can bind the directory or the socket file itself.
+DirectoryMode=0755
+# TCP as well, for clients that cannot reach the socket (e.g. containers), in
+# a drop-in (sudo systemctl edit treesinger.socket):
+#   [Socket]
+#   ListenStream=127.0.0.1:8080
+
+[Install]
+WantedBy=sockets.target

@@ -24,6 +24,35 @@ jobs:
       - name: Test
         run: ./run test
 
+  # The flake: the package (its build runs the tests) and the NixOS VM test,
+  # which boots the module and the plain units for real. Deliberately not in
+  # publish's `needs`: a VM test is slow and can be flaky on shared runners,
+  # and a flaky VM must not block a release. A red run here is still a red
+  # build to fix.
+  nix:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # it publishes nothing
+    steps:
+      # The whole history, so the flake's version has its commit count.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # Hosted runners have /dev/kvm, but not readable by the runner's user;
+      # without it the VM test falls back to emulation, many times slower.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: cachix/install-nix-action@v31
+      - name: VM test
+        run: nix build -L .#checks.x86_64-linux.nixos
+      # Everything else in the flake, the VM test already built above.
+      - name: Flake check
+        run: nix flake check -L
+
   publish:
     runs-on: ubuntu-latest
     needs: test # nothing is published unless the tests pass
@@ -70,8 +99,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Both binaries, the plain unit and sysusers file, treesinger-env and
-      # their checksums, into dist/release.
+      # Both binaries, the plain units and sysusers file, and their checksums,
+      # into dist/release.
       - name: Build release
         run: ./run release
 
@@ -83,14 +112,16 @@ jobs:
           built=$(dist/release/treesinger-linux-x64 version)
           [ "$built" = "$VERSION" ] || { echo "the binary says $built but the release is $VERSION"; exit 1; }
 
-      # The VM test in nix/test.nix runs this unit for real, but CI does not run
-      # it, so the unit is at least checked against a real systemd here, with
-      # its user and its binary where it expects them.
-      - name: Verify the systemd unit
+      # The nix job boots these units for real, but does not gate this one, so
+      # they are at least checked against a real systemd here, with their user
+      # and their binary where they expect them. Verified together, so each
+      # finds the units it names.
+      - name: Verify the systemd units
         run: |
           sudo install -m 755 dist/release/treesinger-linux-x64 /usr/local/bin/treesinger
           sudo systemd-sysusers "$PWD/contrib/systemd/treesinger.sysusers"
-          systemd-analyze verify contrib/systemd/treesinger.service
+          systemd-analyze verify contrib/systemd/treesinger.service \
+            contrib/systemd/treesinger.socket contrib/systemd/treesinger-admin.socket
 
       # A re-run has the same run number and so the same version; the action
       # then updates that release and replaces its assets rather than failing.

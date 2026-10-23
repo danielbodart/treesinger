@@ -190,7 +190,8 @@ func Identifying(version string) Decorator {
 	}
 }
 
-// The one real timer in the codebase; only ever reached on a retry backoff.
+// The one real timer in the codebase: a retry's backoff, and the wait between
+// device-flow polls.
 func delay(ctx context.Context, d time.Duration) error {
 	timer := time.NewTimer(d)
 	defer timer.Stop()

@@ -1,20 +1,31 @@
 // Command treesinger is a central authentication broker for Hytale dedicated
-// servers. Subcommands of one binary, sharing one container:
+// servers. Subcommands of one binary:
 //
-//	treesinger login    the one-time device login; writes the refresh token.
 //	treesinger serve    run the mint-on-request broker.
+//	treesinger login    the one-time device login: through a running broker's
+//	                    admin socket, else directly into the store.
+//	treesinger exec     mint a session, then become a game server with it.
 //	treesinger health   probe a running broker, for a container HEALTHCHECK.
 //	treesinger version  what this build calls itself.
 package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
-	"time"
+	"syscall"
 
 	"github.com/danielbodart/treesinger/internal/broker"
 )
+
+const usage = `usage: treesinger <command>
+
+  serve                                                  run the broker
+  login [--socket PATH]                                  log in (once)
+  exec [--socket PATH | --url URL] -- COMMAND [ARGS...]  run COMMAND with a session
+  health [--socket PATH | --url URL]                     probe a running broker
+  version                                                print the version`
 
 func main() {
 	os.Exit(run(os.Args[1:]))
@@ -23,58 +34,54 @@ func main() {
 func run(args []string) int {
 	command := ""
 	if len(args) > 0 {
-		command = args[0]
+		command, args = args[0], args[1:]
 	}
+	ctx := context.Background()
 	switch command {
-	case "login", "serve", "health":
+	case "serve":
+		if len(args) > 0 {
+			return failed(&broker.UsageError{Usage: "serve"})
+		}
+		c, err := wire()
+		if err != nil {
+			return failed(err)
+		}
+		return failed(broker.Serve(c))
+	case "login":
+		return failed(broker.Login(ctx, args, broker.DefaultAdminSocket, os.Stdout, wire))
+	case "exec":
+		return failed(broker.Exec(ctx, args, broker.Environ(), os.Stderr, syscall.Exec))
+	case "health":
+		return failed(broker.Health(args, broker.Environ()))
 	case "version", "--version":
 		fmt.Println(broker.Version)
 		return 0
-	default:
-		fmt.Fprintln(os.Stderr, "usage: treesinger <login|serve|health|version>")
-		if command != "" {
-			return 1
-		}
+	case "", "help", "--help", "-h":
+		fmt.Println(usage)
 		return 0
-	}
-
-	c := &broker.Container{}
-	if err := c.Wire(); err != nil {
-		return failed(err)
-	}
-	switch command {
-	case "login":
-		return failed(login(c))
-	case "serve":
-		return failed(broker.Serve(c))
 	default:
-		return failed(broker.Health(*c.Config))
+		fmt.Fprintln(os.Stderr, usage)
+		return 2
 	}
 }
 
-// failed is the exit code for a command's result, saying why on stderr.
+// wire is the production container, configured from the environment. Only
+// the commands that need it build it, so `exec` and `health` run where there
+// is no store to point at.
+func wire() (*broker.Container, error) {
+	c := &broker.Container{}
+	return c, c.Wire()
+}
+
+// failed is the exit code for a command's result, saying why on stderr: 2 for
+// a command line that does not parse, else 1.
 func failed(err error) int {
 	if err == nil {
 		return 0
 	}
 	fmt.Fprintln(os.Stderr, "error:", err)
+	if usage := (*broker.UsageError)(nil); errors.As(err, &usage) {
+		return 2
+	}
 	return 1
-}
-
-// login is §1–2: run the device flow, print the code, poll, persist the
-// refresh token.
-func login(c *broker.Container) error {
-	ctx := context.Background()
-	auth, err := c.OAuth.DeviceAuth(ctx)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("\nTo authorise Treesinger, visit:\n\n  %s\n", auth.VerificationURIComplete)
-	fmt.Printf("\nor go to %s and enter code: %s\n\n", auth.VerificationURI, auth.UserCode)
-	fmt.Println("Waiting for approval…")
-	if _, err := c.OAuth.PollToken(ctx, auth.DeviceCode, time.Duration(auth.Interval)*time.Second); err != nil {
-		return err
-	}
-	fmt.Println("✓ Logged in. Refresh token stored. You can now `treesinger serve`.")
-	return nil
 }

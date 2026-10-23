@@ -37,8 +37,31 @@ network isolation is the boundary.
 
 ## Login
 
-Run `login` once against the same volume before the first `serve`:
+Log in once. In a container there is no admin socket, so `treesinger login`
+runs the device flow itself, writing the store at `TREESINGER_STORE`
+(`/data/tokens.json`, on the volume) - it says it is logging in locally.
+
+The first login can be made in the running container, which needs no restart
+after: a broker that has never been logged in holds nothing that could go
+stale, and it reads the store on every request. (`docker exec` runs as the
+image's user, so the store keeps its owner.)
 
 ```sh
-docker run --rm -it -v treesinger-data:/data ghcr.io/danielbodart/treesinger login
+docker exec -it <container> treesinger login
 ```
+
+Any later login (to another account, or replacing one the broker is using)
+is made with the broker stopped, against the same volume, and the broker
+started again after:
+
+```sh
+docker stop <container>
+docker run --rm -it -v treesinger-data:/data ghcr.io/danielbodart/treesinger login
+docker start <container>
+```
+
+A login run beside a broker that is using the store is a second process
+writing it: a refresh the broker has in flight can land after the login and
+put the old tokens back, and the broker keeps the old account's profiles (so
+mints for the wrong one) for up to an hour. Under systemd, `sudo treesinger
+login` goes through the broker itself and has neither problem.

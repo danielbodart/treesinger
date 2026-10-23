@@ -43,9 +43,10 @@ How to run it depends on where your servers run:
 
 - **[Run it in Docker](docs/docker.md)**, beside servers in containers on the
   same compose network. The image is `ghcr.io/danielbodart/treesinger`.
-- **[Run it on systemd](docs/systemd.md)**, beside servers running natively, on a
-  unix socket only their group can reach: from the flake's NixOS module, or from
-  a release binary and unit on any systemd distribution.
+- **[Run it on systemd](docs/systemd.md)**, beside servers running natively,
+  socket-activated on a unix socket only their group can reach: from the
+  flake's NixOS module, or from a release binary and units on any systemd
+  distribution.
 
 The rest of this page applies however it runs.
 
@@ -72,11 +73,24 @@ page above has the commands for its setup.
 |----------------------|---------------------------------------------------------------------|
 | `POST /v1/session`   | Mint `{ sessionToken, identityToken, expiresAt }`. Optional body `{ "uuid": "<profile>" }` overrides which profile. What a booting server calls. |
 | `GET /health`        | `200` only when a mint would succeed (refresh token present **and** a valid access token obtainable). Backs compose `service_healthy`. |
+| `POST /v1/login`     | Runs the device login in the broker, streaming newline-delimited JSON: the verification URL and code, then `{"ok":true}` or `{"error":"..."}`. One at a time (`409` otherwise). **Only on the admin socket** under systemd, never on TCP; what `treesinger login` uses. |
 
 Endpoint auth is **off by default** — the boundary is Docker network isolation,
 or under systemd the unix socket's group.
-Set `TREESINGER_BEARER_TOKEN` to require `Authorization: Bearer <token>` on
+Set a bearer token (below) to require `Authorization: Bearer <token>` on
 `/v1/session` (`/health` stays open).
+
+## Commands
+
+One binary:
+
+| Command | |
+|---|---|
+| `treesinger serve` | Run the broker. Under systemd it serves the sockets systemd passes it (socket activation); otherwise TCP on `TREESINGER_HOST:TREESINGER_PORT`. |
+| `treesinger login [--socket PATH]` | The one-time device login. Through the running broker's admin socket (`/run/treesinger-admin.sock`, so `sudo treesinger login`) when it exists; otherwise locally, into `TREESINGER_STORE` (how Docker logs in). |
+| `treesinger exec [--socket PATH \| --url URL] -- COMMAND [ARGS...]` | Mint a session (default socket `/run/treesinger/treesinger.sock`), put it in `HYTALE_SERVER_SESSION_TOKEN` / `HYTALE_SERVER_IDENTITY_TOKEN`, then become `COMMAND`. On any failure it warns and runs `COMMAND` unauthenticated. For a game server's `ExecStart`. |
+| `treesinger health [--socket PATH \| --url URL]` | Probe a broker: exit `0` only on `200`. Defaults to `http://127.0.0.1:$TREESINGER_PORT/health`, the image's `HEALTHCHECK`. |
+| `treesinger version` | What this build calls itself. |
 
 ## Configuration
 
@@ -86,12 +100,11 @@ All via environment; every value has a default except the refresh token, which
 | Variable                  | Default                                  | Meaning |
 |---------------------------|------------------------------------------|---------|
 | `TREESINGER_STORE`        | `$XDG_CONFIG_HOME/treesinger/tokens.json`| Token store path (put it on a volume). |
-| `TREESINGER_SOCKET`       | unset                                    | Listen on this unix socket (mode `0660`, the process's primary group). |
-| `TREESINGER_PORT`         | `8080`, or unset when a socket is set    | Listen on this TCP port. Set it alongside a socket to listen on both. |
-| `TREESINGER_HOST`         | `0.0.0.0`                                | Address the TCP listener binds. |
+| `TREESINGER_PORT`         | `8080`                                   | TCP port to listen on (and for `health` to probe). Not when socket-activated: the socket units have the listeners then, and setting it is an error. |
+| `TREESINGER_HOST`         | `0.0.0.0`                                | Address the TCP listener binds. Likewise an error when socket-activated. |
 | `TREESINGER_SKEW_MS`      | `300000` (5 min)                         | Refresh the access token when less than this much life remains. |
 | `TREESINGER_OWNER_UUID`   | first profile                            | Which profile to mint for when the account has several. |
-| `TREESINGER_BEARER_TOKEN` | unset                                    | Optional shared secret for `/v1/session`. |
+| `TREESINGER_BEARER_TOKEN` | `$CREDENTIALS_DIRECTORY/bearer-token`, else unset | Optional shared secret for `/v1/session`, for `serve` and `exec`. Under systemd, give it as `LoadCredential=bearer-token:/path` rather than in the environment (a trailing newline is trimmed). `exec` removes the variable before it runs its command, but a credential file stays readable by that command for the life of its unit (see docs/systemd.md). |
 
 ## Development
 
@@ -132,9 +145,10 @@ version` reports what a build calls itself (`development` when run from source).
 Each trunk push publishes a GitHub Release `v<version>` and a Docker image to
 GHCR (`ghcr.io/danielbodart/treesinger:<version>` and `:latest`), both for
 `x64` and `arm64`. The release carries standalone binaries
-(`treesinger-linux-x64`, `treesinger-linux-arm64`), the plain systemd unit and
-sysusers file, `treesinger-env`, and `SHA256SUMS`. A pull request builds
-everything but publishes nothing.
+(`treesinger-linux-x64`, `treesinger-linux-arm64`), the plain systemd units
+(`treesinger.service`, `treesinger.socket`, `treesinger-admin.socket`), the
+sysusers file, and `SHA256SUMS`. A pull request builds everything but
+publishes nothing.
 
 The binaries are static, so one build runs on any distribution, and the image
 is that binary on an empty base.

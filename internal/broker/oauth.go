@@ -41,8 +41,9 @@ type OAuthDeps struct {
 	Store  TokenStore
 	Logger Logger
 	Config *Config
-	// Between-poll wait during the device flow. Instant in tests.
-	Sleep func(time.Duration)
+	// Between-poll wait during the device flow, which gives up when the login
+	// is abandoned. Instant in tests.
+	Sleep func(ctx context.Context, d time.Duration) error
 }
 
 type OAuthClient struct {
@@ -54,6 +55,12 @@ type OAuthClient struct {
 	// makes double-spend structurally impossible.
 	mu       sync.Mutex
 	inflight *flight
+
+	// Serialises the store's two writers, a refresh and a login, from the
+	// refresh's read to its write. Without it a refresh already in flight when a
+	// login completes would land after it, and put back the tokens the login
+	// replaced (perhaps another account's).
+	writing sync.Mutex
 }
 
 // flight is one refresh, awaited by everyone who asked while it ran.
@@ -83,7 +90,9 @@ func (o *OAuthClient) DeviceAuth(ctx context.Context) (DeviceAuth, error) {
 func (o *OAuthClient) PollToken(ctx context.Context, deviceCode string, interval time.Duration) (StoredTokens, error) {
 	form := url.Values{"client_id": {clientID}, "grant_type": {deviceCodeGrant}, "device_code": {deviceCode}}
 	for {
-		o.Sleep(interval)
+		if err := o.Sleep(ctx, interval); err != nil {
+			return StoredTokens{}, err
+		}
 		response, err := o.post(ctx, tokenURL, form)
 		if err != nil {
 			return StoredTokens{}, err
@@ -93,6 +102,8 @@ func (o *OAuthClient) PollToken(ctx context.Context, deviceCode string, interval
 			if err := decode(response, &token); err != nil {
 				return StoredTokens{}, err
 			}
+			o.writing.Lock()
+			defer o.writing.Unlock()
 			return o.persist(token)
 		}
 		data, err := io.ReadAll(response.Body)
@@ -108,6 +119,20 @@ func (o *OAuthClient) PollToken(ctx context.Context, deviceCode string, interval
 			return StoredTokens{}, &UpstreamError{Status: response.StatusCode, Code: code, Message: "device token poll failed: " + code}
 		}
 	}
+}
+
+// Login is the whole device flow, §1–2, for both ways of logging in (the
+// broker's admin socket, and a local `treesinger login`): start it, hand the
+// code to prompt for the operator, then poll until they approve and the
+// refresh token is stored.
+func (o *OAuthClient) Login(ctx context.Context, prompt func(DeviceAuth)) error {
+	auth, err := o.DeviceAuth(ctx)
+	if err != nil {
+		return err
+	}
+	prompt(auth)
+	_, err = o.PollToken(ctx, auth.DeviceCode, time.Duration(auth.Interval)*time.Second)
+	return err
 }
 
 // EnsureAccessToken is a valid OAuth access token, refreshing on demand. Fast
@@ -157,6 +182,8 @@ func (o *OAuthClient) EnsureAccessToken(ctx context.Context) (string, error) {
 // returned, so a crash mid-flight can never lose the only live credential.
 // Returns the new access token.
 func (o *OAuthClient) refresh(ctx context.Context) (string, error) {
+	o.writing.Lock()
+	defer o.writing.Unlock()
 	stored, err := o.Store.Read()
 	if err != nil {
 		return "", err

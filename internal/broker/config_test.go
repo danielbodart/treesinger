@@ -2,6 +2,9 @@ package broker
 
 import (
 	"maps"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,22 +19,19 @@ func withHome(env Env) Env {
 
 func TestConfigFromEnvListeners(t *testing.T) {
 	tests := []struct {
-		name       string
-		env        Env
-		port       *int
-		hostname   string
-		socketPath string
+		name     string
+		env      Env
+		port     *int
+		hostname string
 	}{
-		{"nothing set is TCP 8080 on every address, as the image has always been",
-			Env{}, port(8080), "0.0.0.0", ""},
-		{"a socket alone means no TCP listener",
-			Env{"TREESINGER_SOCKET": "/run/treesinger/treesinger.sock"}, nil, "0.0.0.0", "/run/treesinger/treesinger.sock"},
-		{"a socket and a port listen on both",
-			Env{"TREESINGER_SOCKET": "/run/t.sock", "TREESINGER_PORT": "9090"}, port(9090), "0.0.0.0", "/run/t.sock"},
-		{"the TCP bind address is honoured",
-			Env{"TREESINGER_HOST": "127.0.0.1"}, port(8080), "127.0.0.1", ""},
+		{"nothing set is left unset, for Listen to default (or refuse under socket activation)",
+			Env{}, nil, ""},
+		{"the TCP port is read",
+			Env{"TREESINGER_PORT": "9090"}, port(9090), ""},
+		{"the TCP bind address is read",
+			Env{"TREESINGER_HOST": "127.0.0.1"}, nil, "127.0.0.1"},
 		{"empty values count as unset",
-			Env{"TREESINGER_SOCKET": "", "TREESINGER_HOST": ""}, port(8080), "0.0.0.0", ""},
+			Env{"TREESINGER_PORT": "", "TREESINGER_HOST": ""}, nil, ""},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -43,9 +43,63 @@ func TestConfigFromEnvListeners(t *testing.T) {
 				t.Errorf("port: got %v, want %v", deref(config.Port), deref(test.port))
 			}
 			assertEqual(t, config.Hostname, test.hostname)
-			assertEqual(t, config.SocketPath, test.socketPath)
 		})
 	}
+}
+
+// credentials is a systemd credentials directory holding a bearer-token
+// file with these contents.
+func credentials(t *testing.T, contents string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "bearer-token"), []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestBearerToken(t *testing.T) {
+	t.Run("is off when nothing configures one", func(t *testing.T) {
+		config, err := ConfigFromEnv(withHome(Env{}))
+		assertEqual(t, err, nil)
+		assertEqual(t, config.BearerToken, "")
+	})
+
+	t.Run("is read from TREESINGER_BEARER_TOKEN", func(t *testing.T) {
+		config, err := ConfigFromEnv(withHome(Env{"TREESINGER_BEARER_TOKEN": "s3cret"}))
+		assertEqual(t, err, nil)
+		assertEqual(t, config.BearerToken, "s3cret")
+	})
+
+	t.Run("else from the bearer-token credential, without its trailing newline", func(t *testing.T) {
+		config, err := ConfigFromEnv(withHome(Env{"CREDENTIALS_DIRECTORY": credentials(t, "from-a-file\n")}))
+		assertEqual(t, err, nil)
+		assertEqual(t, config.BearerToken, "from-a-file")
+	})
+
+	t.Run("the variable wins over the credential", func(t *testing.T) {
+		token, err := BearerTokenFromEnv(Env{"TREESINGER_BEARER_TOKEN": "variable", "CREDENTIALS_DIRECTORY": credentials(t, "file")})
+		assertEqual(t, err, nil)
+		assertEqual(t, token, "variable")
+	})
+
+	t.Run("a credentials directory without one is no token", func(t *testing.T) {
+		token, err := BearerTokenFromEnv(Env{"CREDENTIALS_DIRECTORY": t.TempDir()})
+		assertEqual(t, err, nil)
+		assertEqual(t, token, "")
+	})
+
+	t.Run("an empty credential fails at startup rather than opening the gate", func(t *testing.T) {
+		_, err := ConfigFromEnv(withHome(Env{"CREDENTIALS_DIRECTORY": credentials(t, "\n")}))
+		assertErrorContains(t, err, "is empty")
+	})
+
+	t.Run("a token that cannot be sent in a header fails at startup", func(t *testing.T) {
+		_, err := BearerTokenFromEnv(Env{"CREDENTIALS_DIRECTORY": credentials(t, "two\nlines\n")})
+		assertErrorContains(t, err, "control characters")
+		_, err = BearerTokenFromEnv(Env{"TREESINGER_BEARER_TOKEN": "tab\there"})
+		assertErrorContains(t, err, "control characters")
+	})
 }
 
 func TestConfigFromEnvStorePath(t *testing.T) {
@@ -100,4 +154,15 @@ func deref(p *int) any {
 		return "unset"
 	}
 	return *p
+}
+
+func TestConfigFromEnvRefusesTheOldSocketVariable(t *testing.T) {
+	// A pre-socket-activation unit sets it; served under that unit, the broker
+	// would quietly fall back to TCP on 0.0.0.0 with no unix socket.
+	for _, value := range []string{"/run/treesinger/treesinger.sock", ""} {
+		_, err := ConfigFromEnv(withHome(Env{"TREESINGER_SOCKET": value}))
+		if err == nil || !strings.Contains(err.Error(), "treesinger.socket") {
+			t.Fatalf("TREESINGER_SOCKET=%q: got %v", value, err)
+		}
+	}
 }

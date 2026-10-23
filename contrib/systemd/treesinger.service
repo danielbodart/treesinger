@@ -1,26 +1,31 @@
 # /etc/systemd/system/treesinger.service: Treesinger on a plain systemd host.
-# Needs the user from treesinger.sysusers, and the release binary at
-# /usr/local/bin/treesinger. Then, once:
-#   sudo -u treesinger TREESINGER_STORE=/var/lib/treesinger/tokens.json treesinger login
+# Needs the user from treesinger.sysusers, the release binary at
+# /usr/local/bin/treesinger, and treesinger.socket and treesinger-admin.socket
+# beside it: systemd holds the sockets and starts this on the first
+# connection. Enable the sockets (`systemctl enable treesinger` does, through
+# Also=), then, once:
+#   sudo treesinger login
 # Clients join the treesinger group and POST to the socket. See docs/systemd.md.
 [Unit]
 Description=Treesinger: Hytale server authentication broker
+# The listeners are the sockets'; the broker serves only what they pass it.
+Requires=treesinger.socket treesinger-admin.socket
+After=treesinger.socket treesinger-admin.socket
 # Clients mint their sessions as soon as this is ready, once, at boot: wait
 # until Hypixel can be reached, and so make them wait too.
 Wants=network-online.target
 After=network-online.target
 
 [Service]
-# Ready once listening; the broker sends the notification itself.
+# Ready once serving; the broker sends the notification itself.
 Type=notify
 NotifyAccess=main
 ExecStart=/usr/local/bin/treesinger serve
 Environment=TREESINGER_STORE=/var/lib/treesinger/tokens.json
-Environment=TREESINGER_SOCKET=/run/treesinger/treesinger.sock
-# TCP as well, for clients that cannot reach the socket (e.g. containers):
-#Environment=TREESINGER_PORT=8080 TREESINGER_HOST=127.0.0.1
-# Optional bearer token for POST /v1/session, kept out of the unit:
-#EnvironmentFile=/etc/treesinger/env
+# Optional bearer token for POST /v1/session, kept out of the unit and out of
+# the environment: systemd reads the file (it need not be readable by the
+# treesinger user) and the broker reads $CREDENTIALS_DIRECTORY/bearer-token.
+#LoadCredential=bearer-token:/etc/treesinger/bearer-token
 User=treesinger
 Group=treesinger
 UMask=0077
@@ -29,11 +34,6 @@ RestartSec=5s
 
 StateDirectory=treesinger
 StateDirectoryMode=0700
-# Kept across restarts, so a client that bound /run/treesinger into its own
-# namespace sees the new socket the broker makes inside it.
-RuntimeDirectory=treesinger
-RuntimeDirectoryMode=0750
-RuntimeDirectoryPreserve=yes
 
 NoNewPrivileges=yes
 ProtectSystem=strict
@@ -49,7 +49,8 @@ ProtectClock=yes
 ProtectHostname=yes
 ProtectProc=invisible
 ProcSubset=pid
-# unix for the socket and the readiness datagram; inet for HTTPS to Hypixel.
+# unix for the sockets and the readiness datagram; inet for HTTPS to Hypixel
+# (and for a TCP listener, if treesinger.socket has one).
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=yes
 RestrictRealtime=yes
@@ -66,4 +67,5 @@ CapabilityBoundingSet=
 AmbientCapabilities=
 
 [Install]
-WantedBy=multi-user.target
+# The sockets are what is enabled: this starts on their first connection.
+Also=treesinger.socket treesinger-admin.socket

@@ -115,7 +115,10 @@ func TestEnsureAccessToken(t *testing.T) {
 func TestDeviceFlowSlowDownBacksOff(t *testing.T) {
 	var slept []time.Duration
 	h := newHarness(t, options{})
-	h.c.OAuth.Sleep = func(d time.Duration) { slept = append(slept, d) }
+	h.c.OAuth.Sleep = func(_ context.Context, d time.Duration) error {
+		slept = append(slept, d)
+		return nil
+	}
 	slow := scripted{status: 400, json: `{"error":"slow_down"}`}
 	h.fake.on(routeDeviceToken, slow, slow, scripted{json: fixture("token.json")})
 
