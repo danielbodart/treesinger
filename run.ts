@@ -32,8 +32,13 @@ export async function version(): Promise<string> {
   return `${major}.${revisions}.${build}`;
 }
 
+/**
+ * tsc's own script, run by bun. Not `bunx tsc`, which execs its
+ * `#!/usr/bin/env node` shebang: there may be no node (a mise host pinning
+ * only bun), and in the Nix sandbox there is no /usr/bin/env either.
+ */
 export async function check() {
-  await $`bun x --bun tsc --noEmit`;
+  await $`bun node_modules/typescript/bin/tsc --noEmit`;
 }
 
 export async function test(...args: string[]) {
