@@ -30,7 +30,10 @@ let
     mkdir -p $out/lib/systemd/system $out/lib/sysusers.d
     substitute ${../contrib/systemd/treesinger.service} $out/lib/systemd/system/treesinger.service \
       --replace-fail /usr/local/bin/treesinger ${exe}
-    cp ${../contrib/systemd/treesinger.socket} ${../contrib/systemd/treesinger-admin.socket} $out/lib/systemd/system/
+    # Named explicitly: a path interpolates as a store path, <hash>-name, and
+    # cp into a directory would keep that as the unit's name.
+    cp ${../contrib/systemd/treesinger.socket} $out/lib/systemd/system/treesinger.socket
+    cp ${../contrib/systemd/treesinger-admin.socket} $out/lib/systemd/system/treesinger-admin.socket
     cp ${../contrib/systemd/treesinger.sysusers} $out/lib/sysusers.d/treesinger.conf
   '';
 
