@@ -48,6 +48,15 @@
           treesinger-env = pkgs.callPackage ./nix/treesinger-env.nix { };
         });
 
+      # services.treesinger, with this flake's package unless one is given
+      # (the module alone defaults to pkgs.treesinger, from the overlay).
+      nixosModules.default = { lib, pkgs, ... }: {
+        imports = [ ./nix/module.nix ];
+        services.treesinger.package =
+          lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+      };
+      nixosModules.treesinger = self.nixosModules.default;
+
       checks = forAllSystems (pkgs:
         let treesinger = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
         in {
@@ -55,6 +64,12 @@
           typecheck = runCheck treesinger "typecheck" "check";
           test = runCheck treesinger "test" "test";
           treesinger-env = self.packages.${pkgs.stdenv.hostPlatform.system}.treesinger-env;
+        } // lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
+          nixos = import ./nix/test.nix {
+            inherit pkgs treesinger;
+            inherit (self.packages.${pkgs.stdenv.hostPlatform.system}) treesinger-env;
+            module = self.nixosModules.default;
+          };
         });
 
       devShells = forAllSystems (pkgs: {

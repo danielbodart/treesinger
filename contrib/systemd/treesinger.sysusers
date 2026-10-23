@@ -1,0 +1,4 @@
+# /etc/sysusers.d/treesinger.conf: the broker's user and its same-named group,
+# the group of the socket. Add a client to it with:
+#   m <client-user> treesinger
+u treesinger - "Treesinger authentication broker" /var/lib/treesinger

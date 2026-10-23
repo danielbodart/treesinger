@@ -1,0 +1,65 @@
+# /etc/systemd/system/treesinger.service: Treesinger on a plain systemd host.
+# Needs the user from treesinger.sysusers, and the release binary at
+# /usr/local/bin/treesinger. Then, once:
+#   sudo -u treesinger TREESINGER_STORE=/var/lib/treesinger/tokens.json treesinger login
+# Clients join the treesinger group and POST to the socket. See README.md.
+[Unit]
+Description=Treesinger: Hytale server authentication broker
+After=network.target
+
+[Service]
+# Ready once listening; the notification comes from a child (systemd-notify).
+Type=notify
+NotifyAccess=all
+ExecStart=/usr/local/bin/treesinger serve
+Environment=TREESINGER_STORE=/var/lib/treesinger/tokens.json
+Environment=TREESINGER_SOCKET=/run/treesinger/treesinger.sock
+# TCP as well, for clients that cannot reach the socket (e.g. containers):
+#Environment=TREESINGER_PORT=8080 TREESINGER_HOST=127.0.0.1
+# Optional bearer token for POST /v1/session, kept out of the unit:
+#EnvironmentFile=/etc/treesinger/env
+User=treesinger
+Group=treesinger
+UMask=0077
+Restart=on-failure
+RestartSec=5s
+
+StateDirectory=treesinger
+StateDirectoryMode=0700
+# Kept across restarts, so a client that bound /run/treesinger into its own
+# namespace sees the new socket the broker makes inside it.
+RuntimeDirectory=treesinger
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateUsers=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+# unix for the socket and systemd-notify; inet for HTTPS to Hypixel.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+LockPersonality=yes
+# JavaScriptCore compiles JIT code into writable, executable memory.
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
