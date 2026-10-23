@@ -5,3 +5,6 @@ treesinger
 .env
 # Local token store, if a dev points it into the repo.
 *.token.json
+# nix build output links.
+result
+result-*

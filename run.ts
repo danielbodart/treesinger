@@ -33,7 +33,7 @@ export async function version(): Promise<string> {
 }
 
 export async function check() {
-  await $`bunx tsc --noEmit`;
+  await $`bun x --bun tsc --noEmit`;
 }
 
 export async function test(...args: string[]) {
