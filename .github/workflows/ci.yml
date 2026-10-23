@@ -17,8 +17,8 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: jdx/mise-action@v2
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v4
       - run: bun install --frozen-lockfile
       - name: Typecheck
         run: bun run.ts check
@@ -32,10 +32,10 @@ jobs:
       # The whole history, because the version's minor is the commit count and
       # the default shallow checkout would make every build claim to be the
       # first. run.ts refuses to compute a version from a shallow clone.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v4
       - run: bun install --frozen-lockfile
 
       - name: Version
@@ -43,19 +43,19 @@ jobs:
         run: echo "value=$(bun run.ts version)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # Only a real trunk push (not a PR, which may come from a fork) publishes.
       - name: Log in to GHCR
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/trunk'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           # The Dockerfile cross-compiles with Bun from the build platform, so
@@ -98,7 +98,7 @@ jobs:
       # then updates that release and replaces its assets rather than failing.
       - name: Release
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/trunk'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: v${{ steps.version.outputs.value }}
           name: v${{ steps.version.outputs.value }}
