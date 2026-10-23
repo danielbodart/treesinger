@@ -37,6 +37,7 @@
     {
       overlays.default = final: prev: {
         treesinger = final.callPackage ./nix/package.nix { inherit version; };
+        treesinger-env = final.callPackage ./nix/treesinger-env.nix { };
       };
 
       packages = forAllSystems (pkgs:
@@ -44,6 +45,7 @@
         in {
           inherit treesinger;
           default = treesinger;
+          treesinger-env = pkgs.callPackage ./nix/treesinger-env.nix { };
         });
 
       checks = forAllSystems (pkgs:
@@ -52,6 +54,7 @@
           package = treesinger;
           typecheck = runCheck treesinger "typecheck" "check";
           test = runCheck treesinger "test" "test";
+          treesinger-env = self.packages.${pkgs.stdenv.hostPlatform.system}.treesinger-env;
         });
 
       devShells = forAllSystems (pkgs: {
