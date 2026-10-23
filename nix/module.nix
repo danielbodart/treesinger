@@ -10,6 +10,10 @@ let
   managedStateDir = cfg.stateDir == defaultStateDir;
   inHome = lib.hasPrefix "/home/" cfg.stateDir || lib.hasPrefix "/root/" cfg.stateDir;
 
+  # An absolute path as a string: a path literal (./bearer) would be copied
+  # into the world-readable store the moment it is interpolated.
+  secretPath = types.strMatching "/.*";
+
   environment = {
     TREESINGER_STORE = "${cfg.stateDir}/tokens.json";
   } // lib.optionalAttrs (cfg.ownerUuid != null) {
@@ -181,7 +185,7 @@ in
     };
 
     bearerTokenFile = mkOption {
-      type = types.nullOr types.path;
+      type = types.nullOr secretPath;
       default = null;
       example = "/run/secrets/treesinger-bearer";
       description = ''
@@ -199,7 +203,7 @@ in
     };
 
     environmentFile = mkOption {
-      type = types.nullOr types.path;
+      type = types.nullOr secretPath;
       default = null;
       description = "`EnvironmentFile=` for the broker and `treesinger-login`, for values kept out of the store.";
     };
@@ -236,7 +240,10 @@ in
     systemd.services.treesinger = {
       description = "Treesinger: Hytale server authentication broker";
       wantedBy = [ "multi-user.target" ];
-      after = [ "network.target" ];
+      # Clients mint their sessions as soon as this is ready, once, at boot:
+      # wait until Hypixel can be reached, and so make them wait too.
+      wants = [ "network-online.target" ];
+      after = [ "network-online.target" ];
       # systemd-notify comes from the default path, which includes systemd.
       environment = environment // listeners;
 

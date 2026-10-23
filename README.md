@@ -146,10 +146,12 @@ sudo -u treesinger TREESINGER_STORE=/var/lib/treesinger/tokens.json treesinger l
 
 ### A Hytale server as a client
 
-Join the group, order after the broker, and mint the session in `ExecStart` —
-an `ExecStartPre` cannot set `ExecStart`'s environment.
+Join the group, order after the broker (which waits for
+`network-online.target`, so the mint at boot can reach Hypixel), and mint the
+session as the server starts.
 [`contrib/treesinger-env`](contrib/treesinger-env) (needs `curl` and `jq`) does
-that: it asks the broker for a session, puts it in the variables the server
+that by wrapping `ExecStart`, so the tokens are never written to a file: it asks
+the broker for a session, puts it in the variables the server
 reads itself (`HYTALE_SERVER_SESSION_TOKEN` / `HYTALE_SERVER_IDENTITY_TOKEN`,
 never argv), then `exec`s the server. If the broker is down or not logged in, it
 warns and starts the server unauthenticated.
@@ -167,6 +169,11 @@ ExecStart=/usr/local/bin/treesinger-env --socket /run/treesinger/treesinger.sock
 # restart of the broker replaces. "-" boots it unauthenticated without one.
 BindReadOnlyPaths=-/run/treesinger
 ```
+
+An `ExecStartPre` works too: have it write the two variables to a 0600 file
+in the unit's `RuntimeDirectory`, read with `EnvironmentFile=-` (systemd reads
+it again before `ExecStart`), and remove the file when the mint fails, so a
+stale session is never reused.
 
 A client may use `PrivateUsers=yes`: the `treesinger` group is unmapped in its
 user namespace, but the kernel checks the real group, so it still connects.
@@ -204,7 +211,7 @@ where the broker reads it.
 | `host` | `"127.0.0.1"` | TCP bind address. |
 | `openFirewall` | `false` | Open `port`. |
 | `ownerUuid` | `null` | Profile to mint for. |
-| `bearerTokenFile` | `null` | Shared secret for `/v1/session`, read with `LoadCredential`, so never in the store. |
+| `bearerTokenFile` | `null` | Shared secret for `/v1/session`, read with `LoadCredential`, so never in the store: an absolute path as a string, not `./file`. |
 | `environment` | `{}` | Extra environment, e.g. `TREESINGER_SKEW_MS`. |
 | `environmentFile` | `null` | `EnvironmentFile=`. |
 
@@ -221,7 +228,9 @@ services.treesinger = {
 ```
 
 A client, by hand (Chandlery's `services.chandlery.servers.<n>.treesinger.socket`
-does this for its Hytale servers):
+does this for its Hytale servers). Ordering after the broker also waits for
+`network-online.target`, which the broker wants, so the mint at boot can reach
+Hypixel:
 
 ```nix
 systemd.services.hytale = {

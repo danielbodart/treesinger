@@ -7,8 +7,9 @@
 # no broker, not logged in, a bad answer — warns and runs COMMAND without
 # them: an unauthenticated boot, recoverable, rather than no boot at all.
 #
-# For a systemd unit's ExecStart (an ExecStartPre cannot set ExecStart's
-# environment), and the same POST a Hytale image makes to TREESINGER_URL.
+# For a systemd unit's ExecStart, so the tokens never land in a file (an
+# ExecStartPre writing an EnvironmentFile= works too, but leaves them on
+# /run), and the same POST a Hytale image makes to TREESINGER_URL.
 # exec matters: COMMAND keeps this process's pid, stdin and notify socket.
 #
 # TREESINGER_BEARER_TOKEN, if set, is sent as the bearer token (through

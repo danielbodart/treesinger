@@ -5,7 +5,10 @@
 # Clients join the treesinger group and POST to the socket. See README.md.
 [Unit]
 Description=Treesinger: Hytale server authentication broker
-After=network.target
+# Clients mint their sessions as soon as this is ready, once, at boot: wait
+# until Hypixel can be reached, and so make them wait too.
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 # Ready once listening; the notification comes from a child (systemd-notify).

@@ -250,9 +250,9 @@ Inputs: `nixpkgs` (`nixos-unstable`). Systems: `x86_64-linux`,
 | `host` | str | `"127.0.0.1"` | `TREESINGER_HOST` (only used when `port` is set). Loopback by default: on NixOS the socket is the interface; TCP is opt-in. |
 | `openFirewall` | bool | `false` | Open `port` in the firewall. Asserts `port != null`. |
 | `ownerUuid` | null or str | `null` | `TREESINGER_OWNER_UUID`. |
-| `bearerTokenFile` | null or path | `null` | Read via `LoadCredential=` and exported as `TREESINGER_BEARER_TOKEN` by a tiny `ExecStart` wrapper, so the secret never lands in the Nix store or the unit file. |
+| `bearerTokenFile` | null or absolute path string | `null` | A string, not a path literal, which interpolation would copy into the store. Read via `LoadCredential=` and exported as `TREESINGER_BEARER_TOKEN` by a tiny `ExecStart` wrapper, so the secret never lands in the Nix store or the unit file. |
 | `environment` | attrsOf str | `{}` | Extra env (e.g. `TREESINGER_SKEW_MS`), merged over the above. |
-| `environmentFile` | null or path | `null` | `EnvironmentFile=` for secrets the deployer manages. |
+| `environmentFile` | null or absolute path string | `null` | `EnvironmentFile=` for secrets the deployer manages. |
 
 Example — Dan's server:
 
@@ -274,7 +274,8 @@ The container wrote `/data/tokens.json` on that volume, which is
 ```ini
 [Unit]
 Description=Treesinger: Hytale server authentication broker
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=notify
@@ -324,8 +325,10 @@ LoadCredential=bearer-token:<bearerTokenFile>   # only when set
 EnvironmentFile=<environmentFile>               # only when set
 ```
 
-No `network-online.target`: the broker binds a socket at start and reaches
-Hypixel only when asked, so waiting for the network would only delay boot.
+`network-online.target` (`Wants=` and `After=`): the broker binds its socket
+without the network, but its clients mint their sessions the moment it is
+ready, once, at boot, and a mint fails if Hypixel cannot be reached yet.
+Waiting here makes every client ordered after the broker wait too.
 
 `RuntimeDirectoryPreserve=yes` keeps `/run/treesinger`'s **inode** across a
 restart of the broker, so a client that bind-mounted the directory into its own
@@ -444,21 +447,33 @@ needs from Treesinger, and what to watch for:
   the game starting (unauthenticated) if the broker is absent. `connect()` to a
   socket works through a read-only bind (the read-only check does not apply to
   socket inodes).
-- **Env injection — a caveat in the contract as written.** The contract says
-  "an `ExecStartPre` mints the session into the env the server reads". An
-  `ExecStartPre` **cannot** set environment for `ExecStart`: systemd reads
-  `EnvironmentFile=` once, before the first command of the start job, so a file
-  written by `ExecStartPre` is not seen by `ExecStart` of the same start. The
-  working shapes are:
+- **Ordering on the network.** A client mints its session once, at boot, and
+  nothing retries it: a mint that fails because Hypixel is not yet reachable
+  leaves the server unauthenticated until its next restart. So the broker
+  itself is `Wants=`/`After=network-online.target`, and a client ordered
+  `After=treesinger.service` waits for the network through it (as the
+  containers did, behind `docker.service`). A client that reaches the broker
+  some other way (TCP) needs `network-online.target` itself.
+- **Env injection.** The contract says "an `ExecStartPre` mints the session
+  into the env the server reads". That works: systemd reads `EnvironmentFile=`
+  again before each command, once the previous one has ended ("so you can
+  generate these files in one unit state, and read it with this option in the
+  next", systemd.exec(5); checked on systemd 260 with `systemd-run`). Two
+  shapes, both against this broker:
   1. **Mint inside `ExecStart`** — a wrapper that mints, exports
      `HYTALE_SERVER_SESSION_TOKEN` / `HYTALE_SERVER_IDENTITY_TOKEN`, then `exec`s
      the game (what `images/hytale/run` does today with `TREESINGER_URL`). This
      composes with Chandlery's notify wrapper (mint, then exec the notify
-     wrapper). **Recommended.**
-  2. A separate `chandlery-<n>-session.service` oneshot, `Before=` the game,
-     writing `/run/chandlery/<n>/session.env` that the game reads with
-     `EnvironmentFile=-…` (a different unit, so its file exists before the game
-     unit's start job reads it).
+     wrapper). **Recommended**, because the tokens only ever live in the
+     game's environment, never in a file.
+  2. **Mint in `ExecStartPre`** — `curl --unix-socket
+     /run/treesinger/treesinger.sock -X POST http://treesinger/v1/session`,
+     writing the two variables to a file in the unit's `RuntimeDirectory`
+     (mode 0600, e.g. `/run/chandlery/<n>/session.env`), which the game reads
+     with `EnvironmentFile=-/run/chandlery/<n>/session.env`. On a failed mint
+     the script must remove (or truncate) the file, so a stale session from
+     the last start is not reused, and exit 0, so the game still boots
+     unauthenticated.
 
   To make (1) a one-liner for anyone on plain systemd, Treesinger ships
   **`contrib/treesinger-env`**, packaged as `packages.treesinger-env` (a
@@ -477,10 +492,10 @@ needs from Treesinger, and what to watch for:
   `TREESINGER_BEARER_TOKEN` is set, goes to curl on stdin (`-H @-`), not argv,
   and is unset before the `exec`.
 
-  Chandlery's own design (its `docs/nix.md` on its `nix` branch) reached the
-  same conclusion about `ExecStartPre` and inlines the mint instead: its
-  `images/hytale/run` learns `TREESINGER_SOCKET` and makes the same POST with
-  `curl --unix-socket`. Both work against this broker; `treesinger-env` is for
+  Chandlery's own design (its `docs/nix.md` on its `nix` branch) inlines the
+  mint in its run script instead: its `images/hytale/run` learns
+  `TREESINGER_SOCKET` and makes the same POST with `curl --unix-socket`, which
+  is shape 1. Either works against this broker; `treesinger-env` is for
   servers that are not Chandlery's.
 
 ### Portical
