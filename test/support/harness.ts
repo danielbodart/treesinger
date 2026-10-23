@@ -20,6 +20,7 @@ const baseConfig: Config = {
     storePath: "/unused-in-tests",
     skewMs: 5 * 60_000,
     port: 0,
+    hostname: "127.0.0.1",
 };
 
 export interface Harness {
