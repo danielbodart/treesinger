@@ -16,6 +16,7 @@ import (
 	"os"
 	"syscall"
 
+	"github.com/danielbodart/gokit/environ"
 	"github.com/danielbodart/treesinger/internal/broker"
 )
 
@@ -50,9 +51,9 @@ func run(args []string) int {
 	case "login":
 		return failed(broker.Login(ctx, args, broker.DefaultAdminSocket, os.Stdout, wire))
 	case "exec":
-		return failed(broker.Exec(ctx, args, broker.Environ(), os.Stderr, syscall.Exec))
+		return failed(broker.Exec(ctx, args, environ.Current(), os.Stderr, syscall.Exec))
 	case "health":
-		return failed(broker.Health(args, broker.Environ()))
+		return failed(broker.Health(args, environ.Current()))
 	case "version", "--version":
 		fmt.Println(broker.Version)
 		return 0

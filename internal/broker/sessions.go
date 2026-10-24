@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/danielbodart/gokit/clock"
 )
 
 const (
@@ -38,7 +40,7 @@ type GameSession struct {
 
 type SessionDeps struct {
 	Client *http.Client
-	Clock  Clock
+	Clock  clock.Clock
 	OAuth  *OAuthClient
 	Config *Config
 }

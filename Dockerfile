@@ -4,8 +4,10 @@ FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS build
 
 WORKDIR /src
 
-# No requirements in go.mod, so there is nothing to download first.
-COPY go.mod ./
+# The modules first, in a layer of their own, so a change to the code alone
+# does not download them again.
+COPY go.mod go.sum ./
+RUN go mod download
 COPY main.go ./
 COPY internal ./internal
 

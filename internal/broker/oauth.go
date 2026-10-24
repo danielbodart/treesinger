@@ -8,6 +8,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/danielbodart/gokit/clock"
+	"github.com/danielbodart/gokit/logx"
 )
 
 // OAuth 2.0 client for `client_id=hytale-server`, per the Server Provider guide.
@@ -37,12 +40,12 @@ type tokenResponse struct {
 
 type OAuthDeps struct {
 	Client *http.Client
-	Clock  Clock
+	Clock  clock.Clock
 	Store  TokenStore
-	Logger Logger
+	Logger logx.Logger
 	Config *Config
 	// Between-poll wait during the device flow, which gives up when the login
-	// is abandoned. Instant in tests.
+	// is abandoned: on the clock in production, an instant clock in tests.
 	Sleep func(ctx context.Context, d time.Duration) error
 }
 

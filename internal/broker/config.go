@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/danielbodart/gokit/environ"
 )
 
 // Config is static runtime configuration, sourced from the environment. All
@@ -40,26 +42,11 @@ type Config struct {
 // used.
 const DefaultPort = 8080
 
-// Env is an environment as a map, so tests pass one instead of mutating the
-// process's.
-type Env map[string]string
-
-// Environ is the process's environment.
-func Environ() Env {
-	env := Env{}
-	for _, entry := range os.Environ() {
-		if key, value, found := strings.Cut(entry, "="); found {
-			env[key] = value
-		}
-	}
-	return env
-}
-
 // ConfigFromEnv reads everything `serve` needs. An empty value counts as
 // unset, and a value that does not parse fails at startup rather than being
 // guessed at. Where it listens is not decided here: that depends on whether
 // systemd handed it sockets (see Listen).
-func ConfigFromEnv(env Env) (Config, error) {
+func ConfigFromEnv(env environ.Env) (Config, error) {
 	// The unit of releases before socket activation sets it. Under that unit
 	// this broker would get no sockets from systemd and fall back to TCP on
 	// every interface, the unix socket its clients use gone, so it stops instead.
@@ -99,7 +86,7 @@ func ConfigFromEnv(env Env) (Config, error) {
 
 // tcpFromEnv is TREESINGER_PORT and TREESINGER_HOST, each nil or "" when unset
 // so that a caller can tell "unset" from "set to the default".
-func tcpFromEnv(env Env) (*int, string, error) {
+func tcpFromEnv(env environ.Env) (*int, string, error) {
 	value := env["TREESINGER_PORT"]
 	if value == "" {
 		return nil, env["TREESINGER_HOST"], nil
@@ -116,7 +103,7 @@ func tcpFromEnv(env Env) (*int, string, error) {
 // the systemd credential `bearer-token` (LoadCredential=bearer-token:PATH),
 // which keeps the secret out of the unit's environment and needs no wrapper
 // to read it. "" when neither is set, which turns the gate off.
-func BearerTokenFromEnv(env Env) (string, error) {
+func BearerTokenFromEnv(env environ.Env) (string, error) {
 	if token := env["TREESINGER_BEARER_TOKEN"]; token != "" {
 		return token, checkToken("TREESINGER_BEARER_TOKEN", token)
 	}
@@ -156,7 +143,7 @@ func checkToken(source, token string) error {
 // configDir is $XDG_CONFIG_HOME, else $HOME/.config. With neither there is no
 // sensible default, and a path relative to wherever the process happens to be
 // would be worse than none.
-func configDir(env Env) (string, error) {
+func configDir(env environ.Env) (string, error) {
 	if dir := env["XDG_CONFIG_HOME"]; dir != "" {
 		return dir, nil
 	}

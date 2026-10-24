@@ -1,7 +1,6 @@
 package broker
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -12,6 +11,9 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/danielbodart/gokit/environ"
+	"github.com/danielbodart/gokit/systemd"
 )
 
 // Listening is the listeners `serve` is serving: what to log, and how to close
@@ -50,6 +52,10 @@ func (l *Listening) serve(listener net.Listener, handler http.Handler, label str
 	go server.Serve(listener)
 }
 
+// AdminName is the descriptor name that marks the admin socket. Only a socket
+// systemd hands over under this name is ever served the admin handler.
+const AdminName = "admin"
+
 // Listen serves app and admin. Under socket activation it serves exactly the
 // sockets systemd passed (inherited): the one named "admin" gets the admin
 // handler, every other one, unix or TCP, the app. The socket units then say
@@ -60,7 +66,7 @@ func (l *Listening) serve(listener net.Listener, handler http.Handler, label str
 //
 // It returns once everything is listening. A failure closes whatever it was
 // given or opened, so a half-started broker never lingers.
-func Listen(config Config, inherited []Inherited, app, admin http.Handler) (*Listening, error) {
+func Listen(config Config, inherited []systemd.Inherited, app, admin http.Handler) (*Listening, error) {
 	listening := &Listening{}
 	if len(inherited) > 0 {
 		if config.Port != nil || config.Hostname != "" {
@@ -112,6 +118,12 @@ func listenTCP(config Config) (net.Listener, error) {
 	return net.Listen(network, net.JoinHostPort(host, strconv.Itoa(port)))
 }
 
+func closeAll(inherited []systemd.Inherited) {
+	for _, each := range inherited {
+		each.Listener.Close()
+	}
+}
+
 // label is a listener as a URL a client could use.
 func label(listener net.Listener) string {
 	if address, ok := listener.Addr().(*net.UnixAddr); ok {
@@ -120,9 +132,17 @@ func label(listener net.Listener) string {
 	return "http://" + listener.Addr().String()
 }
 
+// Notify is how `serve` tells a supervisor it is listening.
+type Notify func(env environ.Env) error
+
+// ready is readiness for systemd `Type=notify`: sd_notify's READY=1, sent by
+// the main process itself, so it needs no helper and no NotifyAccess=all.
+// Without NOTIFY_SOCKET (Docker, a shell) it does nothing.
+func ready(env environ.Env) error { return systemd.Notify(env, systemd.Ready) }
+
 // Start listens, then says so. Ready is signalled only once every listener is
 // serving, so a client ordered after the service never finds it missing.
-func Start(c *Container, inherited []Inherited, notify Notify, env Env) (*Listening, error) {
+func Start(c *Container, inherited []systemd.Inherited, notify Notify, env environ.Env) (*Listening, error) {
 	listening, err := Listen(*c.Config, inherited, c.App, c.Admin)
 	if err != nil {
 		return nil, err
@@ -138,11 +158,13 @@ func Start(c *Container, inherited []Inherited, notify Notify, env Env) (*Listen
 // Serve runs the broker. It returns only once the process is signalled, after
 // closing its listeners.
 func Serve(c *Container) error {
-	inherited, err := InheritedListeners()
+	// Cleared from the environment once read, so that nothing `serve` might
+	// start mistakes systemd's variables for its own.
+	inherited, err := systemd.Listeners()
 	if err != nil {
 		return err
 	}
-	listening, err := Start(c, inherited, SystemdNotify, Environ())
+	listening, err := Start(c, inherited, ready, environ.Current())
 	if err != nil {
 		return err
 	}
@@ -160,7 +182,7 @@ const healthUsage = "health [--socket PATH | --url URL]"
 // socket with --socket, at a base URL with --url, else the TCP port `serve`
 // would bind, on loopback (or the one address it binds). Healthy only on a
 // 2xx.
-func Health(args []string, env Env) error {
+func Health(args []string, env environ.Env) error {
 	line, err := parseOptionsOnly(healthUsage, args, "--socket", "--url")
 	if err != nil {
 		return err
@@ -189,7 +211,7 @@ func Health(args []string, env Env) error {
 
 // tcpURL is the base URL of the TCP listener `serve` binds for this
 // environment, on loopback when it binds every address.
-func tcpURL(env Env) (string, error) {
+func tcpURL(env environ.Env) (string, error) {
 	port, host, err := tcpFromEnv(env)
 	if err != nil {
 		return "", err
@@ -207,14 +229,3 @@ func tcpURL(env Env) (string, error) {
 // socketURL is the base URL of a broker reached over a unix socket. Any host
 // will do; it only fills in the URL.
 const socketURL = "http://treesinger"
-
-// unixTransport sends every request over the unix socket at path, whatever
-// the URL's host.
-func unixTransport(path string) *http.Transport {
-	return &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var dialer net.Dialer
-			return dialer.DialContext(ctx, "unix", path)
-		},
-	}
-}

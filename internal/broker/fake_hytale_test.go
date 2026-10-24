@@ -30,8 +30,8 @@ type call struct {
 }
 
 // FakeHytale is an in-memory stand-in for Hypixel's services: an http.Handler,
-// reached through HandlerTransport, that replays recorded response shapes from
-// a route table and logs every call, so tests can both script upstream
+// reached through httpx.HandlerTransport, that replays recorded response
+// shapes from a route table and logs every call, so tests can both script upstream
 // behaviour (pending → success, rotation, errors) and assert on how many times
 // a route was hit (e.g. exactly one refresh under concurrency).
 type FakeHytale struct {

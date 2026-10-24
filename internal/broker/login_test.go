@@ -10,6 +10,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/danielbodart/gokit/httpx"
 )
 
 // The operator's view of an approved login, after the line saying how.
@@ -62,7 +64,7 @@ func TestLoginThroughTheBroker(t *testing.T) {
 		h.fake.on(routeDeviceAuth, scripted{json: fixture("device-auth.json")}).
 			on(routeDeviceToken, scripted{status: 400, json: `{"error":"access_denied"}`})
 
-		err := remoteLogin(ctx, &http.Client{Transport: HandlerTransport(h.c.Admin)}, "admin.sock", io.Discard)
+		err := remoteLogin(ctx, &http.Client{Transport: httpx.HandlerTransport(h.c.Admin)}, "admin.sock", io.Discard)
 
 		assertErrorContains(t, err, "login failed: device token poll failed: access_denied")
 	})
@@ -71,13 +73,13 @@ func TestLoginThroughTheBroker(t *testing.T) {
 		busy := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": "login_in_progress"})
 		})
-		err := remoteLogin(ctx, &http.Client{Transport: HandlerTransport(busy)}, "admin.sock", io.Discard)
+		err := remoteLogin(ctx, &http.Client{Transport: httpx.HandlerTransport(busy)}, "admin.sock", io.Discard)
 		assertErrorContains(t, err, "already running a login")
 	})
 
 	t.Run("an answer that is not the admin's is an error", func(t *testing.T) {
 		h := newHarness(t, options{})
-		err := remoteLogin(ctx, &http.Client{Transport: HandlerTransport(h.c.App)}, "treesinger.sock", io.Discard)
+		err := remoteLogin(ctx, &http.Client{Transport: httpx.HandlerTransport(h.c.App)}, "treesinger.sock", io.Discard)
 		assertErrorContains(t, err, "the broker refused the login: not_found (404 Not Found)")
 	})
 
@@ -88,7 +90,7 @@ func TestLoginThroughTheBroker(t *testing.T) {
 	} {
 		t.Run(name+" is an error", func(t *testing.T) {
 			broken := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, stream) })
-			if err := remoteLogin(ctx, &http.Client{Transport: HandlerTransport(broken)}, "admin.sock", io.Discard); err == nil {
+			if err := remoteLogin(ctx, &http.Client{Transport: httpx.HandlerTransport(broken)}, "admin.sock", io.Discard); err == nil {
 				t.Error("want an error")
 			}
 		})

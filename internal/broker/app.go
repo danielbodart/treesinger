@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+
+	"github.com/danielbodart/gokit/logx"
 )
 
 // App is Treesinger's own HTTP surface, as an http.Handler.
@@ -19,7 +21,7 @@ import (
 type App struct {
 	Sessions *SessionClient
 	OAuth    *OAuthClient
-	Logger   Logger
+	Logger   logx.Logger
 }
 
 func (a *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {

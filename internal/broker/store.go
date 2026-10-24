@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
+	"github.com/danielbodart/gokit/atomicfile"
 )
 
 // StoredTokens is the persisted credential set. RefreshToken is the one
@@ -29,9 +31,11 @@ type TokenStore interface {
 
 // FileTokenStore is the file-on-volume store. It mirrors the proven chandlery
 // `tools/hytale-token` semantics: the credential file (and its directory) are
-// owner-only, and writes are atomic (a temp file chmod 600 then renamed over
-// the target) so a crash after a refresh can never strand a spent refresh
-// token as the stored one or briefly expose the file world-readable.
+// owner-only, and writes are atomic and durable (gokit's atomicfile: a temp file
+// at mode 600 whatever the umask, flushed, renamed over the target, and the
+// directory flushed) so a crash or a power cut after a refresh can never
+// strand a spent refresh token as the stored one, leave an empty file, or
+// briefly expose the file world-readable.
 //
 // There is no OS-level lock here (unlike the multi-process CLI it descends
 // from): Treesinger is the sole, single-process writer, and refresh is
@@ -67,16 +71,7 @@ func (s *FileTokenStore) Write(tokens StoredTokens) error {
 	if err != nil {
 		return err
 	}
-	tmp := fmt.Sprintf("%s.%d.tmp", s.path, os.Getpid())
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
-		return err
-	}
-	// WriteFile honours the umask, and leaves an existing file's mode alone;
-	// force owner-only.
-	if err := os.Chmod(tmp, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path)
+	return atomicfile.Write(s.path, data, 0o600)
 }
 
 // MemoryTokenStore is an in-memory store for tests. Same contract, no disk.

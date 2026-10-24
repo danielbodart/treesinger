@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/danielbodart/gokit/httpx"
 )
 
 // startLogin is one POST /v1/login to the admin handler, in memory, read to
@@ -16,7 +18,7 @@ import (
 func startLogin(t *testing.T, ctx context.Context, h *harness) (*http.Response, []string) {
 	t.Helper()
 	request, _ := http.NewRequestWithContext(ctx, http.MethodPost, socketURL+"/v1/login", nil)
-	response, err := (&http.Client{Transport: HandlerTransport(h.c.Admin)}).Do(request)
+	response, err := (&http.Client{Transport: httpx.HandlerTransport(h.c.Admin)}).Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,11 +42,6 @@ func TestAdminLogin(t *testing.T) {
 		h := newHarness(t, options{})
 		scriptLogin(h)
 		h.fake.on(routeProfiles, scripted{json: fixture("profiles.json")}).on(routeNewSession, scripted{json: fixture("game-session.json")})
-		var slept []time.Duration
-		h.c.OAuth.Sleep = func(_ context.Context, d time.Duration) error {
-			slept = append(slept, d)
-			return nil
-		}
 		assertEqual(t, serve(h.c.App, http.MethodPost, brokerSession, "").Code, 401) // before
 
 		response, events := startLogin(t, context.Background(), h)
@@ -54,6 +51,7 @@ func TestAdminLogin(t *testing.T) {
 		assertEqual(t, len(events), 2)
 		assertJSON(t, events[0], prompt)
 		assertJSON(t, events[1], `{"ok":true}`)
+		slept := h.waits.Waits()
 		assertEqual(t, len(slept), 3)
 		assertEqual(t, slept[2], 10*time.Second) // slow_down backed off
 		stored, _ := h.store.Read()
@@ -129,8 +127,8 @@ func TestAdminLogin(t *testing.T) {
 			return ctx.Err()
 		}
 		request, _ := http.NewRequestWithContext(ctx, http.MethodPost, socketURL+"/v1/login", nil)
-		(&http.Client{Transport: HandlerTransport(h.c.Admin)}).Do(request)
-		h.c.OAuth.Sleep = func(context.Context, time.Duration) error { return nil }
+		(&http.Client{Transport: httpx.HandlerTransport(h.c.Admin)}).Do(request)
+		h.c.OAuth.Sleep = h.c.Sleep // the harness's instant waits again
 
 		_, events := startLogin(t, context.Background(), h)
 
@@ -171,7 +169,7 @@ func TestLoginWaitsForARefreshInFlight(t *testing.T) {
 	h := newHarness(t, options{seed: &StoredTokens{RefreshToken: "old-refresh", AccessExpiresAt: epochMillis("2026-08-20T00:02:00Z")}})
 	scriptLogin(h)
 	refreshing, release := make(chan struct{}), make(chan struct{})
-	h.c.Transport = RoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+	h.c.Transport = httpx.RoundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path == "/oauth2/token" {
 			form, _ := io.ReadAll(r.Body)
 			r.Body = io.NopCloser(bytes.NewReader(form))
@@ -180,7 +178,7 @@ func TestLoginWaitsForARefreshInFlight(t *testing.T) {
 				<-release
 			}
 		}
-		return HandlerTransport(h.fake).RoundTrip(r)
+		return httpx.HandlerTransport(h.fake).RoundTrip(r)
 	})
 	h.fake.on(routeRefresh, scripted{json: fixture("token-refreshed.json")})
 	if err := h.c.Wire(); err != nil {
@@ -215,18 +213,17 @@ func TestLoginForgetsProfilesStillBeingFetched(t *testing.T) {
 		on(routeNewSession, scripted{json: fixture("game-session.json")})
 	fetching, release := make(chan struct{}), make(chan struct{})
 	var once bool
-	h.c.Transport = RoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+	h.c.Transport = httpx.RoundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path == "/my-account/get-profiles" && !once {
 			once = true
 			close(fetching)
 			<-release
 		}
-		return HandlerTransport(h.fake).RoundTrip(r)
+		return httpx.HandlerTransport(h.fake).RoundTrip(r)
 	})
 	if err := h.c.Wire(); err != nil {
 		t.Fatal(err)
 	}
-	h.c.OAuth.Sleep = func(context.Context, time.Duration) error { return nil }
 	looked := make(chan error)
 	go func() {
 		_, err := h.c.Sessions.GetProfiles(context.Background())

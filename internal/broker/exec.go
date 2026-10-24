@@ -9,8 +9,9 @@ import (
 	"maps"
 	"net/http"
 	"os/exec"
-	"slices"
 	"time"
+
+	"github.com/danielbodart/gokit/environ"
 )
 
 // DefaultSocket is where treesinger.socket listens, the directory around it
@@ -48,7 +49,7 @@ const (
 //
 // Only a command line that does not parse, or a COMMAND that cannot be found
 // or run, is an error, returned without running anything.
-func Exec(ctx context.Context, args []string, env Env, stderr io.Writer, become Become) error {
+func Exec(ctx context.Context, args []string, env environ.Env, stderr io.Writer, become Become) error {
 	line, err := parseCommandLine(execUsage, args, "--socket", "--url")
 	if err != nil {
 		return err
@@ -87,7 +88,7 @@ func Exec(ctx context.Context, args []string, env Env, stderr io.Writer, become 
 const mintTimeout = 10 * time.Second
 
 // mint is one POST /v1/session, with the bearer token if one is configured.
-func mint(ctx context.Context, client *http.Client, base string, env Env) (GameSession, error) {
+func mint(ctx context.Context, client *http.Client, base string, env environ.Env) (GameSession, error) {
 	var session GameSession
 	token, err := BearerTokenFromEnv(env)
 	if err != nil {
@@ -121,14 +122,4 @@ func mint(ctx context.Context, client *http.Client, base string, env Env) (GameS
 		return session, errors.New("the answer carried no tokens")
 	}
 	return session, nil
-}
-
-// List is the environment as exec takes it, `KEY=value` entries, sorted so
-// the same environment is always the same list.
-func (env Env) List() []string {
-	var list []string
-	for _, key := range slices.Sorted(maps.Keys(env)) {
-		list = append(list, key+"="+env[key])
-	}
-	return list
 }

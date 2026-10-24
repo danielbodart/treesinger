@@ -12,8 +12,8 @@
 >
 > - **Socket activation is built.** systemd holds the sockets
 >   (`treesinger.socket`, `treesinger-admin.socket`) and the broker serves the
->   fds it is passed (`LISTEN_FDS`, read by hand with `net.FileListener`, no
->   go-systemd). The broker no longer creates, chmods or unlinks a socket, and
+>   fds it is passed (`LISTEN_FDS`, read with gokit's `systemd` package over
+>   `net.FileListener`, no go-systemd). The broker no longer creates, chmods or unlinks a socket, and
 >   `TREESINGER_SOCKET` is gone. See [socket activation](#socket-activation).
 > - **Login goes through the broker**, over a root-only admin socket:
 >   `sudo treesinger login` replaces the module's `treesinger-login` wrapper.
@@ -127,8 +127,9 @@ making its own socket (the Bun-era design below):
   named `admin`, which is how the broker tells it apart; the client socket's
   fds keep systemd's default name (the unit's).
 
-The fds are parsed by hand (`os.NewFile` + `net.FileListener`); go-systemd
-would be the module's first dependency for a dozen lines.
+The fds are parsed without libsystemd or go-systemd (`os.NewFile` +
+`net.FileListener`), by gokit's `systemd` package, which Treesinger shares with
+its sibling daemons and which needs nothing beyond the standard library.
 
 ### Socket activation in Bun — investigated, not possible
 

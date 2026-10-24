@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+
+	"github.com/danielbodart/gokit/httpx"
 )
 
 // UsageError is a command line that does not parse. main shows the usage it
@@ -86,5 +88,5 @@ func (c commandLine) broker(usage, defaultSocket string) (client *http.Client, b
 	if socket == "" {
 		return nil, "", "", nil
 	}
-	return &http.Client{Transport: unixTransport(socket)}, socketURL, socket, nil
+	return &http.Client{Transport: httpx.UnixSocket(socket)}, socketURL, socket, nil
 }

@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/danielbodart/gokit/environ"
 )
 
 // becoming records what Exec would have become, in place of syscall.Exec.
@@ -36,7 +38,7 @@ func command(t *testing.T) string {
 
 // execute runs Exec with these arguments and environment, returning what it
 // would have become and what it said.
-func execute(t *testing.T, args []string, env Env) (*becoming, string, error) {
+func execute(t *testing.T, args []string, env environ.Env) (*becoming, string, error) {
 	t.Helper()
 	var stderr bytes.Buffer
 	b := &becoming{}
@@ -60,7 +62,7 @@ func TestExec(t *testing.T) {
 		socket := unixServer(t, mintable(t, nil).c.App)
 		exe := command(t)
 
-		b, said, err := execute(t, []string{"--socket", socket, "--", exe, "--world", "two words"}, Env{"KEEP": "this"})
+		b, said, err := execute(t, []string{"--socket", socket, "--", exe, "--world", "two words"}, environ.Env{"KEEP": "this"})
 
 		assertEqual(t, err, nil)
 		assertEqual(t, b.path, exe)
@@ -73,7 +75,7 @@ func TestExec(t *testing.T) {
 		server := httptest.NewServer(mintable(t, nil).c.App)
 		defer server.Close()
 
-		b, said, err := execute(t, []string{"--url", server.URL + "/", "--", command(t)}, Env{})
+		b, said, err := execute(t, []string{"--url", server.URL + "/", "--", command(t)}, environ.Env{})
 
 		assertEqual(t, err, nil)
 		assertEqual(t, slices.Contains(b.env, "HYTALE_SERVER_SESSION_TOKEN=session-jwt-1"), true)
@@ -83,7 +85,7 @@ func TestExec(t *testing.T) {
 	t.Run("sends the bearer token, and does not pass it on", func(t *testing.T) {
 		socket := unixServer(t, mintable(t, func(c *Config) { c.BearerToken = "s3cret" }).c.App)
 
-		b, _, err := execute(t, []string{"--socket", socket, "--", command(t)}, Env{"TREESINGER_BEARER_TOKEN": "s3cret"})
+		b, _, err := execute(t, []string{"--socket", socket, "--", command(t)}, environ.Env{"TREESINGER_BEARER_TOKEN": "s3cret"})
 
 		assertEqual(t, err, nil)
 		assertEqual(t, slices.Contains(b.env, "HYTALE_SERVER_SESSION_TOKEN=session-jwt-1"), true)
@@ -93,7 +95,7 @@ func TestExec(t *testing.T) {
 	t.Run("reads the bearer token from the systemd credential", func(t *testing.T) {
 		socket := unixServer(t, mintable(t, func(c *Config) { c.BearerToken = "s3cret" }).c.App)
 
-		b, _, err := execute(t, []string{"--socket", socket, "--", command(t)}, Env{"CREDENTIALS_DIRECTORY": credentials(t, "s3cret\n")})
+		b, _, err := execute(t, []string{"--socket", socket, "--", command(t)}, environ.Env{"CREDENTIALS_DIRECTORY": credentials(t, "s3cret\n")})
 
 		assertEqual(t, err, nil)
 		assertEqual(t, slices.Contains(b.env, "HYTALE_SERVER_SESSION_TOKEN=session-jwt-1"), true)
@@ -106,7 +108,7 @@ func TestExec(t *testing.T) {
 	t.Run("with no broker, warns and becomes COMMAND without a session", func(t *testing.T) {
 		_, missing := socketIn(t)
 
-		b, said, err := execute(t, []string{"--socket", missing, "--", command(t)}, Env{"TREESINGER_BEARER_TOKEN": "s3cret", "KEEP": "this"})
+		b, said, err := execute(t, []string{"--socket", missing, "--", command(t)}, environ.Env{"TREESINGER_BEARER_TOKEN": "s3cret", "KEEP": "this"})
 
 		assertEqual(t, err, nil)
 		assertEqual(t, b.called, true)
@@ -117,16 +119,16 @@ func TestExec(t *testing.T) {
 
 	for name, test := range map[string]struct {
 		handler http.Handler
-		env     Env
+		env     environ.Env
 		says    string
 	}{
-		"not logged in": {newHarness(t, options{}).c.App, Env{}, "(401 Unauthorized: not_logged_in)"},
+		"not logged in": {newHarness(t, options{}).c.App, environ.Env{}, "(401 Unauthorized: not_logged_in)"},
 		"the wrong bearer token": {mintable(t, func(c *Config) { c.BearerToken = "s3cret" }).c.App,
-			Env{"TREESINGER_BEARER_TOKEN": "wrong"}, "(401 Unauthorized: unauthorized)"},
-		"an answer with no tokens":   {handlerSaying(`{"expiresAt":"2026-08-20T01:00:00Z"}`), Env{}, "(the answer carried no tokens)"},
-		"an answer that is not JSON": {handlerSaying("<html>"), Env{}, "(an unreadable answer: "},
+			environ.Env{"TREESINGER_BEARER_TOKEN": "wrong"}, "(401 Unauthorized: unauthorized)"},
+		"an answer with no tokens":   {handlerSaying(`{"expiresAt":"2026-08-20T01:00:00Z"}`), environ.Env{}, "(the answer carried no tokens)"},
+		"an answer that is not JSON": {handlerSaying("<html>"), environ.Env{}, "(an unreadable answer: "},
 		"an empty bearer-token credential": {mintable(t, nil).c.App,
-			Env{"CREDENTIALS_DIRECTORY": credentials(t, "")}, "bearer-token credential"},
+			environ.Env{"CREDENTIALS_DIRECTORY": credentials(t, "")}, "bearer-token credential"},
 	} {
 		t.Run(name+" warns and becomes COMMAND without a session", func(t *testing.T) {
 			socket := unixServer(t, test.handler)
@@ -146,7 +148,7 @@ func TestExec(t *testing.T) {
 		h := mintable(t, nil)
 		socket := unixServer(t, h.c.App)
 
-		b, _, err := execute(t, []string{"--socket", socket, "--", "/nonexistent/hytale-server"}, Env{})
+		b, _, err := execute(t, []string{"--socket", socket, "--", "/nonexistent/hytale-server"}, environ.Env{})
 
 		if err == nil {
 			t.Error("want an error")
@@ -159,7 +161,7 @@ func TestExec(t *testing.T) {
 		var stderr bytes.Buffer
 		failing := func(string, []string, []string) error { return errors.New("exec format error") }
 		_, missing := socketIn(t)
-		err := Exec(context.Background(), []string{"--socket", missing, "--", command(t)}, Env{}, &stderr, failing)
+		err := Exec(context.Background(), []string{"--socket", missing, "--", command(t)}, environ.Env{}, &stderr, failing)
 		assertErrorContains(t, err, "exec format error")
 	})
 
@@ -172,7 +174,7 @@ func TestExec(t *testing.T) {
 		"an option without its value": {"--socket"},
 	} {
 		t.Run(name+" is a usage error, with nothing run", func(t *testing.T) {
-			b, _, err := execute(t, args, Env{})
+			b, _, err := execute(t, args, environ.Env{})
 			var usage *UsageError
 			assertEqual(t, errors.As(err, &usage), true)
 			assertEqual(t, b.called, false)

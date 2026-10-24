@@ -7,6 +7,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/danielbodart/gokit/httpx"
+	"github.com/danielbodart/gokit/logx/logtest"
 )
 
 const brokerSession = "http://broker/v1/session"
@@ -107,10 +110,10 @@ func TestOptionalBearerGate(t *testing.T) {
 
 func TestMintAbandonedByItsClientLogsNoFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	logger := &recordingLogger{}
+	logger := &logtest.Logger{}
 	h := newHarness(t, options{seed: validSeed(), config: func(c *Config) { c.OwnerUUID = "x" }})
 	h.c.Logger = logger
-	h.c.Transport = RoundTripperFunc(func(r *http.Request) (*http.Response, error) {
+	h.c.Transport = httpx.RoundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		cancel() // the client goes away while upstream is being asked
 		return nil, r.Context().Err()
 	})
@@ -120,5 +123,5 @@ func TestMintAbandonedByItsClientLogsNoFailure(t *testing.T) {
 
 	h.c.App.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, brokerSession, nil).WithContext(ctx))
 
-	assertEqual(t, len(logger.lines), 0)
+	assertEqual(t, len(logger.Entries()), 0)
 }

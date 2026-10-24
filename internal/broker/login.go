@@ -10,6 +10,8 @@ import (
 	"io/fs"
 	"net/http"
 	"os"
+
+	"github.com/danielbodart/gokit/httpx"
 )
 
 // DefaultAdminSocket is where treesinger-admin.socket listens: outside
@@ -57,7 +59,7 @@ func Login(ctx context.Context, args []string, defaultSocket string, out io.Writ
 		}
 	}
 	fmt.Fprintf(out, "Logging in through the broker at %s.\n", socket)
-	return remoteLogin(ctx, &http.Client{Transport: unixTransport(socket)}, socket, out)
+	return remoteLogin(ctx, &http.Client{Transport: httpx.UnixSocket(socket)}, socket, out)
 }
 
 // remoteLogin asks the broker at the far end of client to log in, and shows

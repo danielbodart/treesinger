@@ -113,18 +113,14 @@ func TestEnsureAccessToken(t *testing.T) {
 }
 
 func TestDeviceFlowSlowDownBacksOff(t *testing.T) {
-	var slept []time.Duration
 	h := newHarness(t, options{})
-	h.c.OAuth.Sleep = func(_ context.Context, d time.Duration) error {
-		slept = append(slept, d)
-		return nil
-	}
 	slow := scripted{status: 400, json: `{"error":"slow_down"}`}
 	h.fake.on(routeDeviceToken, slow, slow, scripted{json: fixture("token.json")})
 
 	if _, err := h.c.OAuth.PollToken(context.Background(), "dev", 5*time.Second); err != nil {
 		t.Fatal(err)
 	}
+	slept := h.waits.Waits()
 	assertEqual(t, len(slept), 3)
 	assertEqual(t, slept[0], 5*time.Second)
 	assertEqual(t, slept[1], 10*time.Second) // each slow_down adds 5s, as RFC 8628 asks

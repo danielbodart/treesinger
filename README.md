@@ -114,15 +114,18 @@ All via environment; every value has a default except the refresh token, which
 nix flake check   # the package (its build runs the tests) and the VM test
 ```
 
-Go and the standard library, nothing else: `go.mod` requires no modules.
+Go and the standard library, and one module of shared helpers,
+[gokit](https://github.com/danielbodart/gokit), which needs nothing but the
+standard library itself.
 
 **Design.** One container builds the whole graph (`internal/broker/container.go`):
 production wires it once, each test wires a fresh one after setting the leaf
 doubles (`Transport`, `Clock`, `Store`, `Config`, ...) — a leaf left unset gets
 its production default when `Wire()` runs, and everything downstream is derived,
 never set. The upstream client is an `http.RoundTripper`, with retrying and
-logging as decorators around it, and the broker itself is an `http.Handler`;
-`HandlerTransport` serves a handler in memory as a round tripper, so the fake
+logging as gokit's `httpx` decorators around it, and the broker itself is an
+`http.Handler`; `httpx.HandlerTransport` serves a handler in memory as a round
+tripper, so the fake
 Hytale in the tests is just a handler replaying recorded response shapes, with
 no sockets or ports. All time-driven decisions are pure functions of the clock
 and stored expiry.

@@ -4,40 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
+
+	"github.com/danielbodart/gokit/clock"
+	"github.com/danielbodart/gokit/httpx"
+	"github.com/danielbodart/gokit/logx"
 )
-
-// silentLogger discards output; keeps test runs quiet while still satisfying
-// Logger.
-type silentLogger struct{}
-
-func (silentLogger) Log(...any) {}
-
-func (silentLogger) Error(...any) {}
-
-// recordingLogger keeps every line, for the tests that assert on logging.
-type recordingLogger struct {
-	mu    sync.Mutex
-	lines []string
-}
-
-func (l *recordingLogger) Log(args ...any) { l.record("log", args) }
-
-func (l *recordingLogger) Error(args ...any) { l.record("error", args) }
-
-func (l *recordingLogger) record(level string, args []any) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.lines = append(l.lines, level+": "+strings.TrimSuffix(fmt.Sprintln(args...), "\n"))
-}
 
 func epochMillis(instant string) int64 {
 	t, err := time.Parse(time.RFC3339, instant)
@@ -60,7 +38,10 @@ func baseConfig() Config {
 }
 
 type harness struct {
-	clock  *StoppedClock
+	clock *clock.Stopped
+	// Every wait the graph asks for - a device-flow poll's, a retry's backoff
+	// - released at once and recorded.
+	waits  *clock.Instant
 	fake   *FakeHytale
 	store  TokenStore
 	config Config
@@ -76,8 +57,9 @@ type options struct {
 }
 
 // newHarness sets the container's leaf doubles BEFORE wiring it: the stopped
-// clock, the fake upstream behind HandlerTransport, an in-memory store, a quiet
-// logger and an instant sleep. Everything else is the production graph.
+// clock, the fake upstream behind httpx.HandlerTransport, an in-memory store,
+// a quiet logger and an instant clock for every wait. Everything else is the
+// production graph.
 func newHarness(t *testing.T, o options) *harness {
 	t.Helper()
 	now := o.now
@@ -88,7 +70,7 @@ func newHarness(t *testing.T, o options) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{clock: NewStoppedClock(start), fake: newFakeHytale(), store: o.store, config: baseConfig()}
+	h := &harness{clock: clock.NewStopped(start), waits: clock.NewInstant(start), fake: newFakeHytale(), store: o.store, config: baseConfig()}
 	if h.store == nil {
 		h.store = NewMemoryTokenStore(o.seed)
 	}
@@ -96,14 +78,17 @@ func newHarness(t *testing.T, o options) *harness {
 		o.config(&h.config)
 	}
 	config := h.config
+	retry := httpx.DefaultRetryPolicy
+	retry.Clock = h.waits
 	h.c = &Container{
 		Config:    &config,
 		Clock:     h.clock,
-		Transport: HandlerTransport(h.fake),
+		Transport: httpx.HandlerTransport(h.fake),
 		Store:     h.store,
-		Logger:    silentLogger{},
-		Sleep:     func(context.Context, time.Duration) error { return nil }, // no real timers in tests
-		Retry:     &RetryPolicy{Retries: DefaultRetryPolicy.Retries, BaseDelay: DefaultRetryPolicy.BaseDelay, Sleep: func(context.Context, time.Duration) error { return nil }},
+		Logger:    logx.Discard,
+		// No real timers in tests, and no stopped clock to advance at each wait.
+		Sleep: func(ctx context.Context, d time.Duration) error { return clock.Sleep(ctx, h.waits, d) },
+		Retry: &retry,
 	}
 	if err := h.c.Wire(); err != nil {
 		t.Fatal(err)

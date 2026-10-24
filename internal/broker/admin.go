@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync/atomic"
+
+	"github.com/danielbodart/gokit/logx"
 )
 
 // Admin is the broker's privileged HTTP surface, as an http.Handler. It is
@@ -21,7 +23,7 @@ import (
 type Admin struct {
 	OAuth    *OAuthClient
 	Sessions *SessionClient
-	Logger   Logger
+	Logger   logx.Logger
 
 	loggingIn atomic.Bool
 }
