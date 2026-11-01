@@ -2,7 +2,12 @@
 # service. systemd holds its sockets: a client socket whose group is the
 # access boundary (and optionally TCP), and a root-only admin socket for
 # `sudo treesinger login`. See docs/systemd.md and docs/systemd-design.md.
-{ config, lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 
 let
   cfg = config.services.treesinger;
@@ -17,9 +22,11 @@ let
   secretPath = types.strMatching "/.*";
 
   # An IPv6 address is bracketed in a ListenStream=, as in a URL.
-  tcp = if lib.hasInfix ":" cfg.host
-    then "[${cfg.host}]:${toString cfg.port}"
-    else "${cfg.host}:${toString cfg.port}";
+  tcp =
+    if lib.hasInfix ":" cfg.host then
+      "[${cfg.host}]:${toString cfg.port}"
+    else
+      "${cfg.host}:${toString cfg.port}";
 in
 {
   options.services.treesinger = {
@@ -114,7 +121,9 @@ in
     environment = mkOption {
       type = types.attrsOf types.str;
       default = { };
-      example = { TREESINGER_SKEW_MS = "600000"; };
+      example = {
+        TREESINGER_SKEW_MS = "600000";
+      };
       description = "Extra environment for the broker.";
     };
 
@@ -169,15 +178,15 @@ in
     systemd.sockets.treesinger = {
       description = "Treesinger: Hytale server authentication broker (client socket)";
       wantedBy = [ "sockets.target" ];
-      listenStreams = lib.optional (cfg.socket != null) cfg.socket
-        ++ lib.optional (cfg.port != null) tcp;
+      listenStreams = lib.optional (cfg.socket != null) cfg.socket ++ lib.optional (cfg.port != null) tcp;
       socketConfig = {
         SocketGroup = cfg.group;
         SocketMode = "0660";
         # The socket's directory, made by systemd; it only ever holds the
         # socket, so a confined client can bind it or the socket file itself.
         DirectoryMode = "0755";
-      } // lib.optionalAttrs (cfg.port != null) {
+      }
+      // lib.optionalAttrs (cfg.port != null) {
         # Sockets start early in boot, perhaps before `host` is configured.
         FreeBind = true;
       };
@@ -198,16 +207,25 @@ in
 
     systemd.services.treesinger = {
       description = "Treesinger: Hytale server authentication broker";
-      requires = [ "treesinger.socket" "treesinger-admin.socket" ];
+      requires = [
+        "treesinger.socket"
+        "treesinger-admin.socket"
+      ];
       # Clients mint their sessions as soon as this is ready, once, at boot:
       # wait until Hypixel can be reached, and so make them wait too.
       wants = [ "network-online.target" ];
-      after = [ "treesinger.socket" "treesinger-admin.socket" "network-online.target" ];
+      after = [
+        "treesinger.socket"
+        "treesinger-admin.socket"
+        "network-online.target"
+      ];
       environment = {
         TREESINGER_STORE = "${cfg.stateDir}/tokens.json";
-      } // lib.optionalAttrs (cfg.ownerUuid != null) {
+      }
+      // lib.optionalAttrs (cfg.ownerUuid != null) {
         TREESINGER_OWNER_UUID = cfg.ownerUuid;
-      } // cfg.environment;
+      }
+      // cfg.environment;
 
       serviceConfig = {
         # Ready once serving; the broker sends the notification itself.
@@ -235,7 +253,11 @@ in
         ProcSubset = "pid";
         # unix for the sockets and the readiness datagram; inet for HTTPS to
         # Hypixel (and the TCP listener, when there is one).
-        RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+        RestrictAddressFamilies = [
+          "AF_UNIX"
+          "AF_INET"
+          "AF_INET6"
+        ];
         RestrictNamespaces = true;
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
@@ -244,22 +266,33 @@ in
         SystemCallArchitectures = "native";
         # Not ~@resources: the Go runtime raises its open-file limit
         # (setrlimit) as it starts, and a filtered call is SIGSYS.
-        SystemCallFilter = [ "@system-service" "~@privileged" ];
+        SystemCallFilter = [
+          "@system-service"
+          "~@privileged"
+        ];
         CapabilityBoundingSet = "";
         AmbientCapabilities = "";
         PrivateUsers = true;
         # Only for its own user: for a shared one (dan) it would remove that
         # user's IPC objects everywhere whenever the broker stops.
         RemoveIPC = cfg.user == "treesinger";
-      } // (if managedStateDir then {
-        StateDirectory = "treesinger";
-        StateDirectoryMode = "0700";
-      } else {
-        ReadWritePaths = [ cfg.stateDir ];
-      }) // lib.optionalAttrs (cfg.bearerTokenFile != null) {
+      }
+      // (
+        if managedStateDir then
+          {
+            StateDirectory = "treesinger";
+            StateDirectoryMode = "0700";
+          }
+        else
+          {
+            ReadWritePaths = [ cfg.stateDir ];
+          }
+      )
+      // lib.optionalAttrs (cfg.bearerTokenFile != null) {
         # The broker reads $CREDENTIALS_DIRECTORY/bearer-token itself.
         LoadCredential = "bearer-token:${cfg.bearerTokenFile}";
-      } // lib.optionalAttrs (cfg.environmentFile != null) {
+      }
+      // lib.optionalAttrs (cfg.environmentFile != null) {
         EnvironmentFile = cfg.environmentFile;
       };
     };

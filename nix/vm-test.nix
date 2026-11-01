@@ -3,10 +3,12 @@
 # the sockets' owners, groups and modes, who can connect, the admin socket,
 # the store path, the bearer credential, restarts, a confined client,
 # `treesinger exec`, and the hardening.
-{ pkgs, module, treesinger }:
+{ pkgs, self }:
 
 let
   inherit (pkgs) lib;
+  module = self.nixosModules.default;
+  treesinger = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
   exe = lib.getExe treesinger;
 
   # The flake's nixosModules.default, so its package comes from the module,
@@ -18,11 +20,13 @@ let
 
   # A valid cached access token: /health is 200 without asking Hypixel, which
   # proves the broker found and could read the store.
-  loggedIn = pkgs.writeText "tokens.json" (builtins.toJSON {
-    refresh_token = "rt";
-    access_token = "at";
-    access_expires_at = 4102444800000; # 2100
-  });
+  loggedIn = pkgs.writeText "tokens.json" (
+    builtins.toJSON {
+      refresh_token = "rt";
+      access_token = "at";
+      access_expires_at = 4102444800000; # 2100
+    }
+  );
 
   # The contrib units as a plain systemd host would install them, ExecStart
   # aside.
@@ -84,7 +88,10 @@ pkgs.testers.runNixOSTest {
     defaults = {
       imports = [ common ];
       services.treesinger.enable = true;
-      users.users.alice = { isNormalUser = true; extraGroups = [ "treesinger" ]; };
+      users.users.alice = {
+        isNormalUser = true;
+        extraGroups = [ "treesinger" ];
+      };
       users.users.bob.isNormalUser = true;
 
       # A game server's view: the broker's directory and nothing else of /run,
@@ -99,7 +106,8 @@ pkgs.testers.runNixOSTest {
           ProtectHome = true;
           TemporaryFileSystem = "/run";
           BindReadOnlyPaths = [ "-/run/treesinger" ];
-          ExecStart = "${exe} exec --socket /run/treesinger/treesinger.sock -- "
+          ExecStart =
+            "${exe} exec --socket /run/treesinger/treesinger.sock -- "
             + "${pkgs.runtimeShell} -c 'echo token=$${HYTALE_SERVER_SESSION_TOKEN:-none}; exec sleep infinity'";
         };
       };
@@ -112,7 +120,8 @@ pkgs.testers.runNixOSTest {
           User = "bob";
           SupplementaryGroups = [ "treesinger" ];
           PrivateUsers = true;
-          ExecStart = "${lib.getExe pkgs.curl} -sS -o /dev/null -w 'status=%{http_code}\\n' "
+          ExecStart =
+            "${lib.getExe pkgs.curl} -sS -o /dev/null -w 'status=%{http_code}\\n' "
             + "--unix-socket /run/treesinger/treesinger.sock http://treesinger/health";
         };
       };
@@ -124,7 +133,10 @@ pkgs.testers.runNixOSTest {
       imports = [ common ];
       users.users.gamer.isNormalUser = true;
       systemd.tmpfiles.rules = [ "d /data/servers/treesinger 0700 gamer users -" ];
-      environment.etc."treesinger-bearer" = { text = "sekrit\n"; mode = "0400"; };
+      environment.etc."treesinger-bearer" = {
+        text = "sekrit\n";
+        mode = "0400";
+      };
       services.treesinger = {
         enable = true;
         user = "gamer";

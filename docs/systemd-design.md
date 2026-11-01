@@ -215,7 +215,8 @@ flake.nix  flake.lock
 nix/
   package.nix        treesinger: buildGo127Module, the tests as its check phase
   module.nix         services.treesinger (nixosModules.default adds the flake's package)
-  test.nix           NixOS VM test: the module, twice, and the contrib units
+  module-check.nix   what the module renders, and what it refuses, without booting
+  vm-test.nix        NixOS VM test: the module, twice, and the contrib units
 contrib/systemd/
   treesinger.service        plain-systemd service (no Nix)
   treesinger.socket         the client socket (and, by drop-in, TCP)
@@ -229,8 +230,8 @@ README.md            + "systemd" and "NixOS" sections
 
 ## Nix flake
 
-Inputs: `nixpkgs` (`nixos-unstable`). Systems: `x86_64-linux`,
-`aarch64-linux` (the VM test only on `x86_64-linux`).
+Inputs: `nixpkgs` (`nixos-26.05`). Systems: `x86_64-linux`,
+`aarch64-linux`. The same shape as Portical's and Tidewaiter's flakes.
 
 | Output | What |
 |---|---|
@@ -238,8 +239,11 @@ Inputs: `nixpkgs` (`nixos-unstable`). Systems: `x86_64-linux`,
 | `overlays.default` | `treesinger` into `pkgs`. |
 | `nixosModules.default` / `.treesinger` | `services.treesinger`, its `package` defaulting (`mkDefault`) to this flake's. `nix/module.nix` alone defaults to `pkgs.treesinger`, from the overlay. |
 | `checks.<system>.package` | the package builds, which runs `go test`. |
-| `checks.x86_64-linux.nixos` | the VM test. |
-| `devShells.<system>.default` | Go (mise stays the primary dev tool). |
+| `checks.<system>.module` | the module evaluated, and what it renders and refuses checked, without booting. |
+| `checks.<system>.vm` | the VM test. |
+| `formatter.<system>` | `nixfmt`. |
+
+There is no devShell: mise is the dev tool, and `mise.toml` pins the Go.
 
 (When the broker was Bun, there were also `typecheck`, `test` and
 `treesinger-env` checks and a `treesinger-env` package; `treesinger exec`
@@ -611,8 +615,9 @@ in `internal/broker/`.)
 
 ### Nix (as built)
 
-`nix flake check` runs the package (whose check phase is `go test`) and the
-VM test; CI runs both in its `nix` job. `nix/test.nix` boots three machines,
+`nix flake check` runs the package (whose check phase is `go test`), the
+module check and the VM test; CI runs them in its `nix` job.
+`nix/vm-test.nix` boots three machines,
 offline:
 
 - **`defaults`** — `services.treesinger.enable` from `nixosModules.default`:
