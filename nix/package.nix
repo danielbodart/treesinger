@@ -22,7 +22,7 @@
 
   # gokit, as `go mod vendor` lays it out. A go.sum change needs it
   # recomputed: build once with lib.fakeHash and take the hash Nix reports.
-  vendorHash = "sha256-IAelkiTjwJXpw73Hf1AKEDVw3Vv/oTfSXZBYjC7Tb84=";
+  vendorHash = "sha256-0Cg6Fn3KDmoOSjC9sDqcVNu/cnZdTLS1YlMfBPQjArU=";
 
   env.CGO_ENABLED = 0;
   ldflags = [
