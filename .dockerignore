@@ -1,10 +1,4 @@
-.git
-dist
-/treesinger
-*.log
-README.md
-PLAN.md
-logo.png
-docs
-nix
-.github
+# The image is the binary dist/ holds for its architecture and nothing else
+# from the tree, so nothing else is sent to the builder.
+*
+!dist/linux-*

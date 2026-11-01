@@ -109,8 +109,8 @@ All via environment; every value has a default except the refresh token, which
 ## Development
 
 ```sh
-./run test        # all in-memory: a fake upstream handler + a stopped clock
-./run check       # gofmt and go vet
+mise install      # installs the pinned Go, and cosign
+mise run check    # gofmt, go vet and the tests, all in-memory: a fake upstream handler + a stopped clock
 nix flake check   # the package (its build runs the tests) and the VM test
 ```
 
@@ -136,22 +136,52 @@ many servers boot at the same moment — this, not a lock, is what makes a
 double-spend structurally impossible. It assumes a single writer process; running
 multiple broker instances against one store would reintroduce the race.
 
+## Channels
+
+Treesinger ships through two channels, each built the way its consumers expect:
+
+- **Upstream** - the Docker image (`ghcr.io/danielbodart/treesinger`, for amd64
+  and arm64) and the
+  [GitHub releases](https://github.com/danielbodart/treesinger/releases): a static
+  binary and a tarball (binary, systemd units, sysusers file, README, LICENSE)
+  per architecture, `SHA256SUMS`, and a cosign keyless signature of each
+  (`cosign verify-blob --bundle <asset>.sigstore.json --certificate-identity-regexp
+  '^https://github.com/danielbodart/treesinger/' --certificate-oidc-issuer
+  https://token.actions.githubusercontent.com <asset>`). Built by
+  [mise](https://mise.jdx.dev) with the Go `mise.toml` pins (`mise run dist`);
+  the image is that binary in an empty image. Consume it with `docker run
+  ghcr.io/danielbodart/treesinger`, or the tarball and its units as in
+  [docs/systemd.md](docs/systemd.md).
+- **Distro** - the flake's `packages.default`, `overlays.default` and
+  `nixosModules.default`, built by nixpkgs (nixos-26.05, `go_1_27`) and cached
+  at `danielbodart.cachix.org`. Consume it as a flake input with
+  `inputs.nixpkgs.follows`, and `services.treesinger`.
+
+A release is made when something it is built from changes (`RELEASE_PATHS` in
+`./run`), and only once every channel's tests pass: `mise run check`, the flake
+check with its NixOS VM test, the image run, and the tarball installed under
+systemd. Every dependency - the flake's inputs, mise's tools to their latest
+patch, the base image's digest and the Go modules - moves once a week, on
+Sunday at 21:23 UTC, committed straight to `trunk` when all of that passes.
+
 ## Releases
 
-**`trunk` is production.** Every push to it publishes: there are no manual tags
-and no release branches. The version is *derived from the repository*, not stored
+**`trunk` is production.** Every push to it that changes what a release is built
+from (`RELEASE_PATHS` in `./run`) publishes, once every channel's tests pass:
+there are no manual tags and no release branches. The version is *derived from the repository*, not stored
 in it — `major.commit-count.ci-run` (see `./run`). The major is the one
 deliberate part (in `MAJOR`); the minor only ever rises and names exactly
 one commit; the patch separates two builds of the same commit. `treesinger
 version` reports what a build calls itself (`development` when run from source).
 
-Each trunk push publishes a GitHub Release `v<version>` and a Docker image to
+Each release publishes a GitHub Release `v<version>` and a Docker image to
 GHCR (`ghcr.io/danielbodart/treesinger:<version>` and `:latest`), both for
 `x64` and `arm64`. The release carries standalone binaries
 (`treesinger-linux-x64`, `treesinger-linux-arm64`), the plain systemd units
 (`treesinger.service`, `treesinger.socket`, `treesinger-admin.socket`), the
-sysusers file, and `SHA256SUMS`. A pull request builds everything but
-publishes nothing.
+sysusers file, a tarball per architecture holding all of them with the README
+and LICENSE, `SHA256SUMS`, and a sigstore bundle for each. A pull request
+builds and tests everything but publishes nothing.
 
 The binaries are static, so one build runs on any distribution, and the image
 is that binary on an empty base.
@@ -159,8 +189,9 @@ is that binary on an empty base.
 ```sh
 ./run version   # what this checkout would publish as
 ./run build     # compile dist/treesinger with the version baked in
-./run release   # the release's binaries, unit files and checksums, into dist/release/
-./run image     # build the same image CI publishes, locally
+./run dist      # the release's binaries, tarballs, unit files and checksums, into dist/
+./run smoke     # the image for this machine from dist/, run: it must say its version
+./run image     # build the same image CI publishes, from dist/
 ```
 
 ## License

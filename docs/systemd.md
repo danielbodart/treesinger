@@ -99,7 +99,7 @@ the design and the reasons behind it.
 
 ## Without Nix
 
-Every push to `trunk` is published as a
+Every release is published as a
 [GitHub release](https://github.com/danielbodart/treesinger/releases) with
 everything a plain systemd host needs:
 
@@ -111,7 +111,9 @@ everything a plain systemd host needs:
 | `treesinger.socket` | The client socket, `/run/treesinger/treesinger.sock`. |
 | `treesinger-admin.socket` | The admin socket, `/run/treesinger-admin.sock`, for `sudo treesinger login`. |
 | `treesinger.sysusers` | A sysusers file for the `treesinger` user and group. |
+| `treesinger-linux-<arch>.tar.gz` | The binary, the units and the sysusers file together, with the README and LICENSE. |
 | `SHA256SUMS` | Checksums of the above. |
+| `*.sigstore.json` | A cosign keyless signature of each of the above, by this repository's CI. |
 
 The same files are in [`contrib/systemd`](../contrib/systemd) for a checkout.
 The binaries are static, so they run on any distribution, and have no
