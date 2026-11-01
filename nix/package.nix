@@ -1,10 +1,10 @@
 # The broker: the same static build as ./run, by nixpkgs' Go, its one module
 # (gokit) vendored by vendorHash, and the check phase runs the tests on the way.
-# buildGo127Module rather than buildGoModule, which is still Go 1.26 in the
-# pinned nixpkgs and would refuse go.mod's `go 1.27`.
-{ lib, buildGo127Module, version ? "development" }:
+# With go_1_27, the major.minor mise.toml pins, rather than nixpkgs' default Go,
+# which is 1.26 and would refuse go.mod's `go 1.27`.
+{ lib, buildGoModule, go_1_27, version ? "development" }:
 
-buildGo127Module {
+(buildGoModule.override { go = go_1_27; }) {
   pname = "treesinger";
   inherit version;
 

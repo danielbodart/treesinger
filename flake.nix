@@ -1,7 +1,9 @@
 {
   description = "Treesinger: central authentication broker for Hytale dedicated servers";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  # The release nix-config builds every host from, which has go_1_27, the Go
+  # that go.mod asks for and mise.toml pins.
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
 
   outputs = { self, nixpkgs }:
     let
@@ -9,14 +11,12 @@
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = f: lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
 
-      # ./run's major.commit-count.build, from what Nix knows: the count is
-      # there for a clean git checkout, a fetch by tarball (github:) has only the
-      # revision, and a dirty tree has neither, so says so.
-      major = lib.fileContents ./MAJOR;
-      version =
-        if self ? revCount then "${major}.${toString self.revCount}.0"
-        else if self ? shortRev then "${major}.0.0-${self.shortRev}"
-        else "development";
+      # nixpkgs' convention for a build from a commit rather than a release:
+      # the commit's date, so it never claims to be one of ./run's versions,
+      # and it is the same however the flake was fetched (a github: input has
+      # no commit count).
+      date = self.lastModifiedDate or "19700101";
+      version = "0-unstable-${builtins.substring 0 4 date}-${builtins.substring 4 2 date}-${builtins.substring 6 2 date}";
     in
     {
       overlays.default = final: prev: {
