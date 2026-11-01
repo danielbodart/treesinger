@@ -138,36 +138,46 @@ multiple broker instances against one store would reintroduce the race.
 
 ## Channels
 
-Treesinger ships through two channels, each built the way its consumers expect:
+- **Docker**: `docker run ghcr.io/danielbodart/treesinger`, for amd64 and
+  arm64 - image `FROM scratch` + the binary `mise run dist` builds, with the
+  CA bundle and the store's directory from a digest-pinned Alpine.
+- **Tarball + systemd**: `treesinger-linux-x86_64.tar.gz` and
+  `-aarch64.tar.gz` on each [GitHub
+  release](https://github.com/danielbodart/treesinger/releases), each the
+  binary, `treesinger.service`, `treesinger.socket`,
+  `treesinger-admin.socket`, `treesinger.sysusers`, README and LICENSE:
+  unpack, install the binary as `/usr/local/bin/treesinger`, the units into
+  `/etc/systemd/system` and the sysusers file into `/etc/sysusers.d`
+  ([docs/systemd.md](docs/systemd.md)). The release also carries each plain
+  binary (`treesinger-linux-x64`, `-arm64`, the names the first releases gave
+  them), the units, `SHA256SUMS`, and a cosign keyless signature of each asset
+  (`cosign verify-blob --bundle <asset>.sigstore.json
+  --certificate-identity-regexp '^https://github.com/danielbodart/treesinger/'
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  <asset>`).
+- **Nix**: flake input `github:danielbodart/treesinger/v<version>` with
+  `inputs.nixpkgs.follows = "nixpkgs"`; `packages.default`, and
+  `nixosModules.default` (`services.treesinger`), and `overlays.default`
+  (`pkgs.treesinger`). Built by nixpkgs (nixos-26.05, `go_1_27`) and cached at
+  `danielbodart.cachix.org`.
+- Not shipped: a Docker Hub image - Treesinger has only ever published to GHCR
+  (Portical and Tidewaiter publish to both).
+- Not shipped: armv7 (image, binary or tarball) - Treesinger has only ever
+  shipped amd64 and arm64 (Portical and Tidewaiter add armv7).
 
-- **Upstream** - the Docker image (`ghcr.io/danielbodart/treesinger`, for amd64
-  and arm64) and the
-  [GitHub releases](https://github.com/danielbodart/treesinger/releases): a static
-  binary and a tarball (binary, systemd units, sysusers file, README, LICENSE)
-  per architecture, `SHA256SUMS`, and a cosign keyless signature of each
-  (`cosign verify-blob --bundle <asset>.sigstore.json --certificate-identity-regexp
-  '^https://github.com/danielbodart/treesinger/' --certificate-oidc-issuer
-  https://token.actions.githubusercontent.com <asset>`). Built by
-  [mise](https://mise.jdx.dev) with the Go `mise.toml` pins (`mise run dist`);
-  the image is that binary in an empty image. Consume it with `docker run
-  ghcr.io/danielbodart/treesinger`, or the tarball and its units as in
-  [docs/systemd.md](docs/systemd.md).
-- **Distro** - the flake's `packages.default`, `overlays.default` and
-  `nixosModules.default`, built by nixpkgs (nixos-26.05, `go_1_27`) and cached
-  at `danielbodart.cachix.org`. Consume it as a flake input with
-  `inputs.nixpkgs.follows`, and `services.treesinger`.
-
-A release is made when something it is built from changes (`RELEASE_PATHS` in
-`./run`), and only once every channel's tests pass: `mise run check`, the flake
-check with its NixOS VM test, the image run, and the tarball installed under
-systemd. Every dependency - the flake's inputs, mise's tools to their latest
-patch, the base image's digest and the Go modules - moves once a week, on
-Sunday at 21:23 UTC, committed straight to `trunk` when all of that passes.
+Updated weekly (Sunday 21:23 UTC): the flake's inputs, mise's tools to the
+latest patch of their minor, the base image's digest and the Go modules,
+committed straight to `trunk` once every channel's tests pass. A release is
+cut when the Go source, `go.mod`/`go.sum`, `mise.toml`, `./run`, the
+`Dockerfile` or `contrib/systemd` changed since the last release
+(`RELEASE_PATHS` in `mise.toml`), and only once `mise run check`, the flake
+check with its module check and NixOS VM test, the image run and the tarball
+installed under systemd pass.
 
 ## Releases
 
 **`trunk` is production.** Every push to it that changes what a release is built
-from (`RELEASE_PATHS` in `./run`) publishes, once every channel's tests pass:
+from (`RELEASE_PATHS` in `mise.toml`) publishes, once every channel's tests pass:
 there are no manual tags and no release branches. The version is *derived from the repository*, not stored
 in it — `major.commit-count.ci-run` (see `./run`). The major is the one
 deliberate part (in `MAJOR`); the minor only ever rises and names exactly
@@ -176,11 +186,13 @@ version` reports what a build calls itself (`development` when run from source).
 
 Each release publishes a GitHub Release `v<version>` and a Docker image to
 GHCR (`ghcr.io/danielbodart/treesinger:<version>` and `:latest`), both for
-`x64` and `arm64`. The release carries standalone binaries
-(`treesinger-linux-x64`, `treesinger-linux-arm64`), the plain systemd units
-(`treesinger.service`, `treesinger.socket`, `treesinger-admin.socket`), the
-sysusers file, a tarball per architecture holding all of them with the README
-and LICENSE, `SHA256SUMS`, and a sigstore bundle for each. A pull request
+amd64 and arm64, its notes the commits since the last release. The release
+carries standalone binaries (`treesinger-linux-x64`, `treesinger-linux-arm64`),
+the plain systemd units (`treesinger.service`, `treesinger.socket`,
+`treesinger-admin.socket`), the sysusers file, a tarball per architecture
+holding all of them with the README and LICENSE
+(`treesinger-linux-x86_64.tar.gz`, `treesinger-linux-aarch64.tar.gz`),
+`SHA256SUMS`, and a sigstore bundle for each. A pull request
 builds and tests everything but publishes nothing.
 
 The binaries are static, so one build runs on any distribution, and the image

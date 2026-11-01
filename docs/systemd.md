@@ -93,8 +93,9 @@ systemd.services.hytale = {
 };
 ```
 
-The flake also has `overlays.default` (`pkgs.treesinger`) and a VM test in
-`checks.x86_64-linux.nixos`. [`docs/systemd-design.md`](systemd-design.md) has
+The flake also has `overlays.default` (`pkgs.treesinger`), a check of what
+the module renders in `checks.<system>.module`, and a VM test in
+`checks.<system>.vm`. [`docs/systemd-design.md`](systemd-design.md) has
 the design and the reasons behind it.
 
 ## Without Nix
@@ -111,7 +112,7 @@ everything a plain systemd host needs:
 | `treesinger.socket` | The client socket, `/run/treesinger/treesinger.sock`. |
 | `treesinger-admin.socket` | The admin socket, `/run/treesinger-admin.sock`, for `sudo treesinger login`. |
 | `treesinger.sysusers` | A sysusers file for the `treesinger` user and group. |
-| `treesinger-linux-<arch>.tar.gz` | The binary, the units and the sysusers file together, with the README and LICENSE. |
+| `treesinger-linux-x86_64.tar.gz`, `-aarch64.tar.gz` | The binary, the units and the sysusers file together, with the README and LICENSE, named as every one of danielbodart's tools names its tarballs. |
 | `SHA256SUMS` | Checksums of the above. |
 | `*.sigstore.json` | A cosign keyless signature of each of the above, by this repository's CI. |
 

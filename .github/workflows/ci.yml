@@ -4,8 +4,9 @@ name: CI
 # the flake with its NixOS VM test, the image run, and the tarball installed
 # under a real systemd. A release - the images and a GitHub release of the
 # same version - waits for all of them, and is made only when something it is
-# built from (./run's RELEASE_PATHS) changed since the last release tag, or a
-# dispatch asks for one with `release`. The weekly update dispatches it so.
+# built from (RELEASE_PATHS in mise.toml) changed since the last release tag,
+# or a dispatch asks for one with `release`. The weekly update dispatches it
+# so.
 
 on:
   push:
@@ -24,6 +25,12 @@ on:
 # write*.
 permissions:
   contents: read
+
+# bash, so GitHub runs every step with -eo pipefail: a command that fails on
+# the left of a pipe fails the step rather than handing on what it printed.
+defaults:
+  run:
+    shell: bash
 
 jobs:
   check:
@@ -93,7 +100,7 @@ jobs:
         env:
           FORCE: ${{ inputs.release }}
         run: |
-          if [ "$FORCE" = true ] || ./run release-due; then
+          if [ "$FORCE" = true ] || mise run release-due; then
             echo "value=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -117,7 +124,7 @@ jobs:
       - uses: docker/setup-buildx-action@v4
       - run: ./run smoke
 
-  # The x64 tarball unpacked and installed as the docs say, and its units
+  # The x86_64 tarball unpacked and installed as the docs say, and its units
   # checked against a real systemd, with their user and the binary where they
   # expect them.
   tarball:
@@ -146,7 +153,11 @@ jobs:
     env:
       VERSION: ${{ needs.dist.outputs.version }}
     steps:
+      # The whole history and its tags, for the notes: the commits since the
+      # last release.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
           name: dist
@@ -164,8 +175,10 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
-      # The image's org.opencontainers.image.source label links the package
-      # to this repository.
+      # GHCR only, not Docker Hub as Portical and Tidewaiter also publish to:
+      # Treesinger has only ever published here (the README's Channels says
+      # so). The image's org.opencontainers.image.source label links the
+      # package to this repository.
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -177,7 +190,7 @@ jobs:
         with:
           context: .
           # Each image only copies its binary in, so no architecture is
-          # emulated.
+          # emulated. Not linux/arm/v7: see ARCHES in ./run.
           platforms: linux/amd64,linux/arm64
           push: true
           # :latest is what compose pulls; the exact version is what makes it
@@ -199,8 +212,13 @@ jobs:
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" dist/release/* --clobber
           else
+            # The notes are the commits since the last release.
             {
-              git log -1 --format=%B "$GITHUB_SHA"
+              if prev=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_SHA" 2>/dev/null); then
+                git log "$prev..$GITHUB_SHA" --pretty='- %s (%h)'
+              else
+                git log -1 --pretty='- %s (%h)' "$GITHUB_SHA"
+              fi
               echo
               echo "Image: \`ghcr.io/danielbodart/treesinger:$VERSION\`"
             } > notes.md
