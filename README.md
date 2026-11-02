@@ -138,18 +138,18 @@ multiple broker instances against one store would reintroduce the race.
 
 ## Channels
 
-- **Docker**: `docker run ghcr.io/danielbodart/treesinger`, for amd64 and
-  arm64 - image `FROM scratch` + the binary `mise run dist` builds, with the
+- **Docker**: `docker run danielbodart/treesinger` (or
+  `ghcr.io/danielbodart/treesinger`), for amd64, arm64 and armv7 - image `FROM scratch` + the binary `mise run dist` builds, with the
   CA bundle and the store's directory from a digest-pinned Alpine.
-- **Tarball + systemd**: `treesinger-linux-x86_64.tar.gz` and
-  `-aarch64.tar.gz` on each [GitHub
+- **Tarball + systemd**: `treesinger-linux-x86_64.tar.gz`, `-aarch64.tar.gz`
+  and `-armv7.tar.gz` on each [GitHub
   release](https://github.com/danielbodart/treesinger/releases), each the
   binary, `treesinger.service`, `treesinger.socket`,
   `treesinger-admin.socket`, `treesinger.sysusers`, README and LICENSE:
   unpack, install the binary as `/usr/local/bin/treesinger`, the units into
   `/etc/systemd/system` and the sysusers file into `/etc/sysusers.d`
   ([docs/systemd.md](docs/systemd.md)). The release also carries each plain
-  binary (`treesinger-linux-x64`, `-arm64`, the names the first releases gave
+  binary (`treesinger-linux-x64`, `-arm64`, `-armv7`, the names the first releases gave
   them), the units, `SHA256SUMS`, and a cosign keyless signature of each asset
   (`cosign verify-blob --bundle <asset>.sigstore.json
   --certificate-identity-regexp '^https://github.com/danielbodart/treesinger/'
@@ -160,10 +160,6 @@ multiple broker instances against one store would reintroduce the race.
   `nixosModules.default` (`services.treesinger`), and `overlays.default`
   (`pkgs.treesinger`). Built by nixpkgs (nixos-26.05, `go_1_27`) and cached at
   `danielbodart.cachix.org`.
-- Not shipped: a Docker Hub image - Treesinger has only ever published to GHCR
-  (Portical and Tidewaiter publish to both).
-- Not shipped: armv7 (image, binary or tarball) - Treesinger has only ever
-  shipped amd64 and arm64 (Portical and Tidewaiter add armv7).
 
 Updated weekly (Sunday 21:23 UTC): the flake's inputs, mise's tools to the
 latest patch of their minor, the base image's digest and the Go modules,

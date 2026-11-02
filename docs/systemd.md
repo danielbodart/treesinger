@@ -108,11 +108,12 @@ everything a plain systemd host needs:
 | --- | --- |
 | `treesinger-linux-x64` | The binary, for 64-bit Intel and AMD. |
 | `treesinger-linux-arm64` | The binary, for 64-bit ARM. |
+| `treesinger-linux-armv7` | The binary, for 32-bit ARMv7 - a Pi 2 onwards on 32-bit Raspberry Pi OS, or an armhf NAS. |
 | `treesinger.service` | The service (hardened, see `systemd-analyze security treesinger`). |
 | `treesinger.socket` | The client socket, `/run/treesinger/treesinger.sock`. |
 | `treesinger-admin.socket` | The admin socket, `/run/treesinger-admin.sock`, for `sudo treesinger login`. |
 | `treesinger.sysusers` | A sysusers file for the `treesinger` user and group. |
-| `treesinger-linux-x86_64.tar.gz`, `-aarch64.tar.gz` | The binary, the units and the sysusers file together, with the README and LICENSE, named as every one of danielbodart's tools names its tarballs. |
+| `treesinger-linux-x86_64.tar.gz`, `-aarch64.tar.gz`, `-armv7.tar.gz` | The binary, the units and the sysusers file together, with the README and LICENSE, named as every one of danielbodart's tools names its tarballs. |
 | `SHA256SUMS` | Checksums of the above. |
 | `*.sigstore.json` | A cosign keyless signature of each of the above, by this repository's CI. |
 
@@ -124,7 +125,7 @@ dependencies.
 
 ```sh
 cd "$(mktemp -d)"
-arch=$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/')
+arch=$(uname -m | sed 's/x86_64/x64/; s/aarch64/arm64/; s/armv7l/armv7/')
 base=https://github.com/danielbodart/treesinger/releases/latest/download
 for f in "treesinger-linux-$arch" treesinger.service treesinger.socket \
     treesinger-admin.socket treesinger.sysusers SHA256SUMS; do

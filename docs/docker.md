@@ -1,6 +1,7 @@
 # Running Treesinger in Docker
 
-The image is `ghcr.io/danielbodart/treesinger`, for `amd64` and `arm64`, tagged
+The image is `danielbodart/treesinger` on Docker Hub and
+`ghcr.io/danielbodart/treesinger` on GHCR, for `amd64`, `arm64` and `armv7`, tagged
 `:latest` and with each exact version, so a deployment can be pinned and rolled
 back. In a container the broker listens on TCP `:8080`, and its boundary is the
 compose network: endpoint auth is off unless `TREESINGER_BEARER_TOKEN` is set.

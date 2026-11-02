@@ -33,8 +33,8 @@ LABEL org.opencontainers.image.version="$VERSION" \
 COPY --from=base /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=base /out/data /data
 
-# TARGETVARIANT is empty for both architectures released, so this is
-# dist/linux-amd64 or dist/linux-arm64.
+# TARGETVARIANT is v7 for 32-bit ARM and empty otherwise, so this is
+# dist/linux-amd64, dist/linux-arm64 or dist/linux-armv7.
 ARG TARGETARCH
 ARG TARGETVARIANT
 COPY dist/linux-${TARGETARCH}${TARGETVARIANT}/treesinger /usr/local/bin/treesinger

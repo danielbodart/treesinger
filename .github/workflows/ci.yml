@@ -175,10 +175,15 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
-      # GHCR only, not Docker Hub as Portical and Tidewaiter also publish to:
-      # Treesinger has only ever published here (the README's Channels says
-      # so). The image's org.opencontainers.image.source label links the
-      # package to this repository.
+      - uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+      # The same image on GitHub's registry, for anyone who would rather not
+      # depend on Docker Hub's pull limits. The image's
+      # org.opencontainers.image.source label links the package to this
+      # repository.
       - uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -190,12 +195,15 @@ jobs:
         with:
           context: .
           # Each image only copies its binary in, so no architecture is
-          # emulated. Not linux/arm/v7: see ARCHES in ./run.
-          platforms: linux/amd64,linux/arm64
+          # emulated. armv7 for a broker on an older 32-bit Pi.
+          platforms: linux/amd64,linux/arm64,linux/arm/v7
           push: true
-          # :latest is what compose pulls; the exact version is what makes it
-          # possible to pin one, and to roll back to one.
+          # Both tags point at the same image. :latest is what compose pulls;
+          # the exact version is what makes it possible to pin one, and to
+          # roll back to one.
           tags: |
+            danielbodart/treesinger:latest
+            danielbodart/treesinger:${{ env.VERSION }}
             ghcr.io/danielbodart/treesinger:latest
             ghcr.io/danielbodart/treesinger:${{ env.VERSION }}
           build-args: |
@@ -220,7 +228,30 @@ jobs:
                 git log -1 --pretty='- %s (%h)' "$GITHUB_SHA"
               fi
               echo
-              echo "Image: \`ghcr.io/danielbodart/treesinger:$VERSION\`"
+              echo "Image: \`danielbodart/treesinger:$VERSION\` or \`ghcr.io/danielbodart/treesinger:$VERSION\`"
             } > notes.md
             gh release create "$tag" dist/release/* --target "$GITHUB_SHA" --title "$tag" --latest --notes-file notes.md
           fi
+
+  # Docker Hub has not synced a README from GitHub since Automated Builds went
+  # away, so it has to be pushed over the API. Its own job, allowed to fail:
+  # the image is what a release is, and a description that would not update
+  # must not make a good publish look broken. Editing the description needs a
+  # token with delete/admin scope, not only Read & Write.
+  description:
+    runs-on: ubuntu-latest
+    needs: release
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+
+      # The README's logo is referenced by absolute URL for this reason:
+      # relative paths resolve against GitHub and render broken there.
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v5
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PASSWORD }}
+          repository: danielbodart/treesinger
+          short-description: "Central authentication broker for Hytale dedicated servers: sign in once, the fleet inherits"
+          readme-filepath: ./README.md

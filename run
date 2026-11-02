@@ -13,10 +13,8 @@ NAME=treesinger
 VERSION_VAR=github.com/danielbodart/treesinger/internal/broker.Version
 
 # Every architecture released, by its Docker platform's name without the
-# slashes, which is what the Dockerfile asks dist/ for. Not armv7, as Portical
-# and Tidewaiter release: Treesinger has only ever shipped these two (the
-# README's Channels says so).
-ARCHES="amd64 arm64"
+# slashes, which is what the Dockerfile asks dist/ for.
+ARCHES="amd64 arm64 armv7"
 
 # The plain units shipped beside the binary: the service, its two sockets, and
 # the user it runs as.
@@ -190,8 +188,8 @@ release_due() {
 
 # The same image CI publishes, for every architecture, from dist/.
 image() {
-  docker buildx build --platform linux/amd64,linux/arm64 --build-arg VERSION="$(cat dist/version)" \
-    --tag "${1:-ghcr.io/danielbodart/$NAME:dev}" .
+  docker buildx build --platform linux/amd64,linux/arm64,linux/arm/v7 --build-arg VERSION="$(cat dist/version)" \
+    --tag "${1:-danielbodart/$NAME:dev}" .
 }
 
 command=${1:-build}
