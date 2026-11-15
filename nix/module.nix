@@ -35,7 +35,7 @@ in
     package = mkOption {
       type = types.package;
       default = pkgs.treesinger;
-      defaultText = lib.literalExpression "treesinger.packages.\${system}.default";
+      defaultText = lib.literalMD "this flake's package (the release's binary) through `nixosModules.default`, else `pkgs.treesinger` from `overlays.default`";
       description = "The Treesinger package. Also put on the system path, for `sudo treesinger login`.";
     };
 

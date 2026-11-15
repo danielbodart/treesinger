@@ -111,7 +111,8 @@ All via environment; every value has a default except the refresh token, which
 ```sh
 mise install      # installs the pinned Go, and cosign
 mise run check    # gofmt, go vet and the tests, all in-memory: a fake upstream handler + a stopped clock
-nix flake check   # the package (its build runs the tests) and the VM test
+nix flake check   # the module check; with a release.json, the NixOS VM test too (needs KVM)
+./run nix-local-release   # after mise run dist: dist/ as the flake's release, for nix build and the VM test
 ```
 
 Go and the standard library, and one module of shared helpers,
@@ -158,8 +159,12 @@ multiple broker instances against one store would reintroduce the race.
 - **Nix**: flake input `github:danielbodart/treesinger/v<version>` with
   `inputs.nixpkgs.follows = "nixpkgs"`; `packages.default`, and
   `nixosModules.default` (`services.treesinger`), and `overlays.default`
-  (`pkgs.treesinger`). Built by nixpkgs (nixos-26.05, `go_1_27`) and cached at
-  `danielbodart.cachix.org`.
+  (`pkgs.treesinger`). The package is that release's own static binary for
+  x86_64, aarch64 or armv7l, fetched by the hash in the tag's
+  `nix/release.json`, not a second build from source: a release's tag is a
+  commit of its own, a child of the released `trunk` commit, that adds only
+  that file. On `trunk` the flake has the module but no package, and the
+  overlay adds nothing, so pin a tag.
 
 Updated weekly (Sunday 21:23 UTC): the flake's inputs, mise's tools to the
 latest patch of their minor, the base image's digest and the Go modules,

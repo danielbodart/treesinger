@@ -235,15 +235,26 @@ Inputs: `nixpkgs` (`nixos-26.05`). Systems: `x86_64-linux`,
 
 | Output | What |
 |---|---|
-| `packages.<system>.default` / `.treesinger` | The broker: one static binary, `bin/treesinger`. |
-| `overlays.default` | `treesinger` into `pkgs`. |
+| `packages.<system>.default` / `.treesinger` | The broker: one static binary, `bin/treesinger`, the release's own (below). Only on a release tag. |
+| `overlays.default` | `treesinger` into `pkgs`: the same release binary; on `trunk`, nothing. |
 | `nixosModules.default` / `.treesinger` | `services.treesinger`, its `package` defaulting (`mkDefault`) to this flake's. `nix/module.nix` alone defaults to `pkgs.treesinger`, from the overlay. |
-| `checks.<system>.package` | the package builds, which runs `go test`. |
-| `checks.<system>.module` | the module evaluated, and what it renders and refuses checked, without booting. |
-| `checks.<system>.vm` | the VM test. |
+| `checks.<system>.module` | the module evaluated, with a stand-in package, and what it renders and refuses checked, without booting. |
+| `checks.<system>.vm` | the VM test, of the release's package: where `nix/release.json` exists. |
 | `formatter.<system>` | `nixfmt`. |
 
 There is no devShell: mise is the dev tool, and `mise.toml` pins the Go.
+
+**Since 2026-11-15 the package is the release binary, not a build from
+source** (Dan: a normal mise build is good enough, and building it again is
+pointless). CI's dist job builds every binary once with mise's Go; the
+release job writes `nix/release.json` (the version, and each system's binary
+URL and SRI hash: `./run release-json`), commits it as a one-commit child of
+the released `trunk` commit, and pushes only the tag `v<V>` there. The flake
+reads that file: a `stdenvNoCC` derivation per system that `fetchurl`s the
+binary and installs it unchanged. CI's `nix` job makes its own run's dist the
+release (`./run nix-local-release`, `nix-store --add-fixed`), so the VM test
+runs the binary the run releases. `nix/package.nix` (`buildGoModule`,
+`vendorHash`, the tests as its check phase) and the Cachix push are gone.
 
 (When the broker was Bun, there were also `typecheck`, `test` and
 `treesinger-env` checks and a `treesinger-env` package; `treesinger exec`
@@ -251,9 +262,8 @@ replaced the last.)
 
 ### How the package builds in the sandbox
 
-(The Bun build, kept as the record. The Go package is `nix/package.nix`: a
-static `buildGo127Module` with no modules to vendor, its check phase the
-tests, and the version below.)
+(The Bun build, kept as the record. The Go package was `nix/package.nix`, a
+static `buildGo127Module`, until the release binary replaced it.)
 
 - **`node_modules` as a fixed-output derivation**: `bun install
   --frozen-lockfile --ignore-scripts --no-progress` with network,
@@ -615,8 +625,8 @@ in `internal/broker/`.)
 
 ### Nix (as built)
 
-`nix flake check` runs the package (whose check phase is `go test`), the
-module check and the VM test; CI runs them in its `nix` job.
+`nix flake check` runs the module check and, given a `nix/release.json`, the
+VM test; CI runs them in its `nix` job, on its own run's binaries.
 `nix/vm-test.nix` boots three machines,
 offline:
 

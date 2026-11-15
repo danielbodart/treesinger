@@ -50,7 +50,7 @@ afterwards: the broker reads the store on every request.
 | Option | Default | |
 |---|---|---|
 | `enable` | `false` | |
-| `package` | this flake's | Also put on the system path. |
+| `package` | this flake's: the release's binary | Also put on the system path. Pin a release tag, whose flake has the package; `trunk`'s has none. |
 | `user` | `"treesinger"` | Created when left as `treesinger`; any other user must exist and own `stateDir`. |
 | `group` | `"treesinger"` | The client socket's group; created when left as `treesinger`. |
 | `stateDir` | `"/var/lib/treesinger"` | Holds `tokens.json`. Any other path must already exist; it is never created or chowned. |
