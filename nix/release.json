@@ -1,0 +1,17 @@
+{
+  "version": "0.56.36",
+  "assets": {
+    "x86_64-linux": {
+      "url": "https://github.com/danielbodart/treesinger/releases/download/v0.56.36/treesinger-linux-x64",
+      "hash": "sha256-RxOj4sDsj+X98BKJDBFuVpzrbxlNEKysdwenhzQxnoU="
+    },
+    "aarch64-linux": {
+      "url": "https://github.com/danielbodart/treesinger/releases/download/v0.56.36/treesinger-linux-arm64",
+      "hash": "sha256-2ITy9ro+xzJIEY0L/owkS9a4KBX6giF4MM9yNKtNa/c="
+    },
+    "armv7l-linux": {
+      "url": "https://github.com/danielbodart/treesinger/releases/download/v0.56.36/treesinger-linux-armv7",
+      "hash": "sha256-ftIscPXd6ET+iW9Qg2Z6hLw79lo4b14bw+o4Je/XZ6k="
+    }
+  }
+}
