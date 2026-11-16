@@ -170,8 +170,8 @@ Updated weekly (Sunday 21:23 UTC): the flake's inputs, mise's tools to the
 latest patch of their minor, the base image's digest and the Go modules,
 committed straight to `trunk` once every channel's tests pass. A release is
 cut when the Go source, `go.mod`/`go.sum`, `mise.toml`, `./run`, the
-`Dockerfile` or `contrib/systemd` changed since the last release
-(`RELEASE_PATHS` in `mise.toml`), and only once `mise run check`, the flake
+`Dockerfile`, `contrib/systemd`, `flake.nix` or the NixOS module changed
+since the last release (`RELEASE_PATHS` in `mise.toml`), and only once `mise run check`, the flake
 check with its module check and NixOS VM test, the image run and the tarball
 installed under systemd pass.
 
